@@ -1,0 +1,416 @@
+use crate::session::db_handler::DbResponse;
+use crate::PgSqliteError;
+use sqlparser::ast::{Statement, TableFactor, Select, SetExpr, SelectItem, Expr};
+use sqlparser::dialect::PostgreSqlDialect;
+use sqlparser::parser::Parser;
+use tracing::debug;
+
+/// Intercepts and handles queries to pg_catalog tables
+pub struct CatalogInterceptor;
+
+impl CatalogInterceptor {
+    /// Check if a query is targeting pg_catalog and handle it
+    pub fn intercept_query(query: &str) -> Option<Result<DbResponse, PgSqliteError>> {
+        // Quick check to avoid parsing if not a catalog query
+        let lower_query = query.to_lowercase();
+        if !lower_query.contains("pg_catalog") && !lower_query.contains("pg_type") && !lower_query.contains("pg_namespace") && !lower_query.contains("pg_range") {
+            return None;
+        }
+        
+        debug!("Intercepting catalog query: {}", query);
+        
+        // Special handling for LIMIT 0 queries used for metadata
+        if query.contains("LIMIT 0") {
+            debug!("Skipping LIMIT 0 catalog query");
+            return None;
+        }
+
+        // Parse the query
+        let dialect = PostgreSqlDialect {};
+        match Parser::parse_sql(&dialect, query) {
+            Ok(statements) => {
+                if statements.len() == 1 {
+                    if let Statement::Query(query) = &statements[0] {
+                        if let Some(response) = Self::handle_catalog_query(query) {
+                            return Some(Ok(response));
+                        }
+                    }
+                }
+            }
+            Err(_) => return None,
+        }
+
+        None
+    }
+
+    fn handle_catalog_query(query: &sqlparser::ast::Query) -> Option<DbResponse> {
+        // Check if this is a SELECT from pg_catalog tables
+        if let SetExpr::Select(select) = &*query.body {
+            // Check if this is a JOIN query involving pg_type
+            if select.from.len() > 0 && !select.from[0].joins.is_empty() {
+                // Check if main table is pg_type
+                if let TableFactor::Table { name, .. } = &select.from[0].relation {
+                    let table_name = name.to_string().to_lowercase();
+                    if table_name.contains("pg_type") || table_name.contains("pg_catalog.pg_type") {
+                        // This is a pg_type JOIN query - handle it specially
+                        return Some(Self::handle_pg_type_join_query(select));
+                    }
+                }
+            }
+            
+            // For simple queries, check each table
+            for table_ref in &select.from {
+                // Check main table
+                if let Some(response) = Self::check_table_factor(&table_ref.relation, select) {
+                    return Some(response);
+                }
+                
+                // Check joined tables
+                for join in &table_ref.joins {
+                    if let Some(response) = Self::check_table_factor(&join.relation, select) {
+                        return Some(response);
+                    }
+                }
+            }
+        }
+        
+        None
+    }
+    
+    fn check_table_factor(table_factor: &TableFactor, select: &Select) -> Option<DbResponse> {
+        if let TableFactor::Table { name, .. } = table_factor {
+            let table_name = name.to_string().to_lowercase();
+            
+            // Handle pg_type queries
+            if table_name.contains("pg_type") || table_name.contains("pg_catalog.pg_type") {
+                return Some(Self::handle_pg_type_query(select));
+            }
+            
+            // Handle pg_namespace queries
+            if table_name.contains("pg_namespace") || table_name.contains("pg_catalog.pg_namespace") {
+                return Some(Self::handle_pg_namespace_query(select));
+            }
+            
+            // Handle pg_range queries (usually empty)
+            if table_name.contains("pg_range") || table_name.contains("pg_catalog.pg_range") {
+                return Some(Self::handle_pg_range_query(select));
+            }
+        }
+        None
+    }
+
+    fn handle_pg_type_query(select: &Select) -> DbResponse {
+        // Extract which columns are being selected
+        let mut columns = Vec::new();
+        let mut column_indices = Vec::new();
+        
+        debug!("Processing pg_type query with {} projections", select.projection.len());
+        
+        for (i, item) in select.projection.iter().enumerate() {
+            match item {
+                SelectItem::UnnamedExpr(Expr::CompoundIdentifier(parts)) => {
+                    let col_name = parts.last().unwrap().value.to_lowercase();
+                    debug!("  Column {}: {}", i, col_name);
+                    columns.push(col_name.clone());
+                    column_indices.push(i);
+                }
+                SelectItem::UnnamedExpr(Expr::Identifier(ident)) => {
+                    let col_name = ident.value.to_lowercase();
+                    debug!("  Column {}: {}", i, col_name);
+                    columns.push(col_name.clone());
+                    column_indices.push(i);
+                }
+                _ => {
+                    debug!("  Column {}: unknown projection type", i);
+                }
+            }
+        }
+
+        // Check if there's a WHERE clause filtering by OID
+        let mut filter_oid = None;
+        let mut has_placeholder = false;
+        
+        if let Some(selection) = &select.selection {
+            if let Expr::BinaryOp { left, op, right } = selection {
+                if matches!(op, sqlparser::ast::BinaryOperator::Eq) {
+                    // Check both patterns: t.oid and just oid
+                    let is_oid_column = if let Expr::CompoundIdentifier(left_parts) = left.as_ref() {
+                        left_parts.last().unwrap().value.to_lowercase() == "oid"
+                    } else if let Expr::Identifier(ident) = left.as_ref() {
+                        ident.value.to_lowercase() == "oid"
+                    } else {
+                        false
+                    };
+                    
+                    if is_oid_column {
+                        // Check if right side is a number (not a placeholder)
+                        if let Expr::Value(sqlparser::ast::ValueWithSpan { value: sqlparser::ast::Value::Number(n, _), .. }) = right.as_ref() {
+                            filter_oid = n.parse::<i32>().ok();
+                        } else if let Expr::Value(sqlparser::ast::ValueWithSpan { value: sqlparser::ast::Value::Placeholder(_), .. }) = right.as_ref() {
+                            // If it's a placeholder like $1, return empty result to avoid infinite loops
+                            has_placeholder = true;
+                        }
+                    }
+                }
+            }
+        }
+        
+        // If query has a placeholder, we need to handle it differently
+        // Don't return empty result as tokio-postgres needs the type info
+        debug!("Query has placeholder: {}, filter_oid: {:?}", has_placeholder, filter_oid);
+
+        // Build response based on columns requested
+        let mut rows = Vec::new();
+        
+        // Define our basic types - matching all types from type_mapper.rs
+        let types = vec![
+            // Basic types
+            (16, "bool", "b", 0, 0, 11, 0),        // bool
+            (17, "bytea", "b", 0, 0, 11, 0),       // bytea
+            (20, "int8", "b", 0, 0, 11, 0),        // bigint
+            (21, "int2", "b", 0, 0, 11, 0),        // smallint
+            (23, "int4", "b", 0, 0, 11, 0),        // integer
+            (25, "text", "b", 0, 0, 11, 0),        // text
+            (114, "json", "b", 0, 0, 11, 0),       // json
+            (700, "float4", "b", 0, 0, 11, 0),     // real
+            (701, "float8", "b", 0, 0, 11, 0),     // double precision
+            (1042, "char", "b", 0, 0, 11, 0),      // char
+            (1043, "varchar", "b", 0, 0, 11, 0),   // varchar
+            (1082, "date", "b", 0, 0, 11, 0),      // date
+            (1083, "time", "b", 0, 0, 11, 0),      // time
+            (1114, "timestamp", "b", 0, 0, 11, 0), // timestamp
+            (1184, "timestamptz", "b", 0, 0, 11, 0), // timestamptz
+            (1700, "numeric", "b", 0, 0, 11, 0),   // numeric
+            (2950, "uuid", "b", 0, 0, 11, 0),      // uuid
+            (3802, "jsonb", "b", 0, 0, 11, 0),     // jsonb
+            // Array types
+            (1000, "_bool", "b", 16, 0, 11, 0),    // bool array
+            (1001, "_bytea", "b", 17, 0, 11, 0),   // bytea array
+            (1005, "_int2", "b", 21, 0, 11, 0),    // int2 array
+            (1007, "_int4", "b", 23, 0, 11, 0),    // int4 array
+            (1009, "_text", "b", 25, 0, 11, 0),    // text array
+            (1014, "_char", "b", 1042, 0, 11, 0),  // char array
+            (1015, "_varchar", "b", 1043, 0, 11, 0), // varchar array
+            (1016, "_int8", "b", 20, 0, 11, 0),    // int8 array
+            (1021, "_float4", "b", 700, 0, 11, 0), // float4 array
+            (1022, "_float8", "b", 701, 0, 11, 0), // float8 array
+            (1115, "_timestamp", "b", 1114, 0, 11, 0), // timestamp array
+            (1182, "_date", "b", 1082, 0, 11, 0),  // date array
+            (1183, "_time", "b", 1083, 0, 11, 0),  // time array
+            (1185, "_timestamptz", "b", 1184, 0, 11, 0), // timestamptz array
+            (1231, "_numeric", "b", 1700, 0, 11, 0), // numeric array
+            (2951, "_uuid", "b", 2950, 0, 11, 0),  // uuid array
+            (199, "_json", "b", 114, 0, 11, 0),    // json array
+            (3807, "_jsonb", "b", 3802, 0, 11, 0), // jsonb array
+        ];
+
+        for (oid, typname, typtype, typelem, typbasetype, _typnamespace, typrelid) in types {
+            // Apply filter if specified
+            if let Some(filter) = filter_oid {
+                if oid != filter {
+                    continue;
+                }
+            }
+
+            let mut row = Vec::new();
+            for col in &columns {
+                let value = match col.as_str() {
+                    "oid" => Some(oid.to_string().into_bytes()),
+                    "typname" => Some(typname.to_string().into_bytes()),
+                    "typtype" => Some(typtype.to_string().into_bytes()),
+                    "typelem" => Some(typelem.to_string().into_bytes()),
+                    "typbasetype" => Some(typbasetype.to_string().into_bytes()),
+                    "typnamespace" => Some(_typnamespace.to_string().into_bytes()),
+                    "typrelid" => Some(typrelid.to_string().into_bytes()),
+                    "nspname" => Some("pg_catalog".to_string().into_bytes()),
+                    "rngsubtype" => None, // NULL for non-range types
+                    _ => None,
+                };
+                row.push(value);
+            }
+            
+            if !row.is_empty() {
+                rows.push(row);
+            }
+        }
+
+        let rows_affected = rows.len();
+        debug!("Returning {} rows for pg_type query", rows_affected);
+        DbResponse {
+            columns,
+            rows,
+            rows_affected,
+        }
+    }
+
+    fn handle_pg_namespace_query(_select: &Select) -> DbResponse {
+        // Return basic namespaces
+        let columns = vec!["oid".to_string(), "nspname".to_string()];
+        let rows = vec![
+            vec![
+                Some("11".to_string().into_bytes()),
+                Some("pg_catalog".to_string().into_bytes()),
+            ],
+            vec![
+                Some("2200".to_string().into_bytes()),
+                Some("public".to_string().into_bytes()),
+            ],
+        ];
+
+        let rows_affected = rows.len();
+        debug!("Returning {} rows for pg_type query", rows_affected);
+        DbResponse {
+            columns,
+            rows,
+            rows_affected,
+        }
+    }
+
+    fn handle_pg_range_query(_select: &Select) -> DbResponse {
+        // pg_range is typically empty for basic types
+        let columns = vec!["rngtypid".to_string(), "rngsubtype".to_string()];
+        let rows = vec![];
+        let rows_affected = rows.len();
+
+        DbResponse {
+            columns,
+            rows,
+            rows_affected,
+        }
+    }
+    
+    fn handle_pg_type_join_query(select: &Select) -> DbResponse {
+        // Handle the complex JOIN query that tokio-postgres uses
+        // Extract which columns are being selected
+        let mut columns = Vec::new();
+        
+        debug!("Processing pg_type JOIN query with {} projections", select.projection.len());
+        
+        for item in &select.projection {
+            match item {
+                SelectItem::UnnamedExpr(Expr::CompoundIdentifier(parts)) => {
+                    let col_name = parts.last().unwrap().value.to_lowercase();
+                    debug!("  Column: {}", col_name);
+                    columns.push(col_name);
+                }
+                SelectItem::UnnamedExpr(Expr::Identifier(ident)) => {
+                    let col_name = ident.value.to_lowercase();
+                    debug!("  Column: {}", col_name);
+                    columns.push(col_name);
+                }
+                _ => {
+                    debug!("  Unknown projection type");
+                }
+            }
+        }
+
+        // Check if there's a WHERE clause filtering by OID
+        let mut filter_oid = None;
+        
+        if let Some(selection) = &select.selection {
+            if let Expr::BinaryOp { left, op, right } = selection {
+                if matches!(op, sqlparser::ast::BinaryOperator::Eq) {
+                    let is_oid_column = if let Expr::CompoundIdentifier(left_parts) = left.as_ref() {
+                        left_parts.last().unwrap().value.to_lowercase() == "oid"
+                    } else if let Expr::Identifier(ident) = left.as_ref() {
+                        ident.value.to_lowercase() == "oid"
+                    } else {
+                        false
+                    };
+                    
+                    if is_oid_column {
+                        // Check if right side is a number or placeholder
+                        if let Expr::Value(sqlparser::ast::ValueWithSpan { value: sqlparser::ast::Value::Number(n, _), .. }) = right.as_ref() {
+                            filter_oid = n.parse::<i32>().ok();
+                        } else if let Expr::Value(sqlparser::ast::ValueWithSpan { value: sqlparser::ast::Value::Placeholder(_), .. }) = right.as_ref() {
+                            // For placeholders in JOIN queries, we return all types
+                            // tokio-postgres will filter client-side
+                            filter_oid = None;
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Build response with all requested columns
+        let mut rows = Vec::new();
+        
+        // Define our types with proper values for JOIN query
+        let types = vec![
+            // Basic types
+            (16, "bool", "b", 0, 0, 11, 0),
+            (17, "bytea", "b", 0, 0, 11, 0),
+            (20, "int8", "b", 0, 0, 11, 0),
+            (21, "int2", "b", 0, 0, 11, 0),
+            (23, "int4", "b", 0, 0, 11, 0),
+            (25, "text", "b", 0, 0, 11, 0),
+            (114, "json", "b", 0, 0, 11, 0),
+            (700, "float4", "b", 0, 0, 11, 0),
+            (701, "float8", "b", 0, 0, 11, 0),
+            (1042, "char", "b", 0, 0, 11, 0),
+            (1043, "varchar", "b", 0, 0, 11, 0),
+            (1082, "date", "b", 0, 0, 11, 0),
+            (1083, "time", "b", 0, 0, 11, 0),
+            (1114, "timestamp", "b", 0, 0, 11, 0),
+            (1184, "timestamptz", "b", 0, 0, 11, 0),
+            (1700, "numeric", "b", 0, 0, 11, 0),
+            (2950, "uuid", "b", 0, 0, 11, 0),
+            (3802, "jsonb", "b", 0, 0, 11, 0),
+            // Array types - typtype is still 'b' for arrays in PostgreSQL
+            (1000, "_bool", "b", 16, 0, 11, 0),
+            (1001, "_bytea", "b", 17, 0, 11, 0),
+            (1005, "_int2", "b", 21, 0, 11, 0),
+            (1007, "_int4", "b", 23, 0, 11, 0),
+            (1009, "_text", "b", 25, 0, 11, 0),
+            (1014, "_char", "b", 1042, 0, 11, 0),
+            (1015, "_varchar", "b", 1043, 0, 11, 0),
+            (1016, "_int8", "b", 20, 0, 11, 0),
+            (1021, "_float4", "b", 700, 0, 11, 0),
+            (1022, "_float8", "b", 701, 0, 11, 0),
+            (1115, "_timestamp", "b", 1114, 0, 11, 0),
+            (1182, "_date", "b", 1082, 0, 11, 0),
+            (1183, "_time", "b", 1083, 0, 11, 0),
+            (1185, "_timestamptz", "b", 1184, 0, 11, 0),
+            (1231, "_numeric", "b", 1700, 0, 11, 0),
+            (2951, "_uuid", "b", 2950, 0, 11, 0),
+            (199, "_json", "b", 114, 0, 11, 0),
+            (3807, "_jsonb", "b", 3802, 0, 11, 0),
+        ];
+
+        for (oid, typname, typtype, typelem, typbasetype, _typnamespace, typrelid) in types {
+            // Apply filter if specified
+            if let Some(filter) = filter_oid {
+                if oid != filter {
+                    continue;
+                }
+            }
+
+            let mut row = Vec::new();
+            for col in &columns {
+                let value = match col.as_str() {
+                    "typname" => Some(typname.to_string().into_bytes()),
+                    "typtype" => Some(typtype.to_string().into_bytes()),
+                    "typelem" => Some(typelem.to_string().into_bytes()),
+                    "rngsubtype" => None, // NULL for non-range types
+                    "typbasetype" => Some(typbasetype.to_string().into_bytes()),
+                    "nspname" => Some("pg_catalog".to_string().into_bytes()),
+                    "typrelid" => Some(typrelid.to_string().into_bytes()),
+                    _ => None,
+                };
+                row.push(value);
+            }
+            
+            if !row.is_empty() {
+                rows.push(row);
+            }
+        }
+
+        let rows_affected = rows.len();
+        debug!("Returning {} rows for pg_type JOIN query", rows_affected);
+        DbResponse {
+            columns,
+            rows,
+            rows_affected,
+        }
+    }
+}
