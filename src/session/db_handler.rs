@@ -1,5 +1,6 @@
 use std::sync::Arc;
 use uuid::Uuid;
+use rusqlite::OptionalExtension;
 use crate::cache::SchemaCache;
 use crate::optimization::{OptimizationManager, statement_cache_optimizer::StatementCacheOptimizer};
 use crate::query::{QueryTypeDetector, QueryType, process_query};
@@ -8,9 +9,10 @@ use crate::migration::MigrationRunner;
 use crate::validator::StringConstraintValidator;
 use crate::session::ConnectionManager;
 use crate::PgSqliteError;
-use tracing::{info, debug};
+use tracing::debug;
 
 /// Database response structure
+#[derive(Debug)]
 pub struct DbResponse {
     pub columns: Vec<String>,
     pub rows: Vec<Vec<Option<Vec<u8>>>>,
@@ -38,7 +40,7 @@ impl DbHandler {
     pub fn new_with_config(db_path: &str, config: &Config) -> Result<Self, rusqlite::Error> {
         // For initial setup, we need to ensure database exists and run migrations
         if !db_path.contains(":memory:") && !std::path::Path::new(db_path).exists() {
-            info!("New database file detected, will run initial migrations...");
+            debug!("New database file detected, will run initial migrations...");
         }
         
         // Create a temporary connection for migrations
@@ -57,7 +59,7 @@ impl DbHandler {
             Arc::new(config.clone())
         ));
         
-        debug!("DbHandler initialized with per-session connection architecture");
+        // DbHandler initialized
         
         Ok(Self {
             connection_manager,
@@ -104,7 +106,7 @@ impl DbHandler {
     fn run_migrations_if_needed(conn: rusqlite::Connection, db_path: &str) -> Result<(), rusqlite::Error> {
         // Skip all checks for in-memory databases
         if db_path.contains(":memory:") {
-            info!("Running initial migrations for in-memory database...");
+            debug!("Running initial migrations for in-memory database...");
             
             // Register functions before migrations
             crate::functions::register_all_functions(&conn)?;
@@ -113,7 +115,7 @@ impl DbHandler {
             match runner.run_pending_migrations() {
                 Ok(applied) => {
                     if !applied.is_empty() {
-                        debug!("Applied {} migrations to new database", applied.len());
+                        // Migrations applied
                     }
                 }
                 Err(e) => {
@@ -146,9 +148,9 @@ impl DbHandler {
                         ));
                     }
                 }
-                Err(e) => {
+                Err(_e) => {
                     // Don't fail on drift detection errors, just log them
-                    debug!("Failed to check schema drift: {e}");
+                    // Schema drift check failed
                 }
             }
         }
@@ -161,7 +163,7 @@ impl DbHandler {
         ).unwrap_or(0) == 0;
         
         if needs_migrations {
-            info!("Running initial migrations...");
+            debug!("Running initial migrations...");
             
             // Register functions before migrations
             crate::functions::register_all_functions(&conn)?;
@@ -170,7 +172,7 @@ impl DbHandler {
             match runner.run_pending_migrations() {
                 Ok(applied) => {
                     if !applied.is_empty() {
-                        debug!("Applied {} migrations to new database", applied.len());
+                        // Migrations applied
                     }
                 }
                 Err(e) => {
@@ -233,28 +235,51 @@ impl DbHandler {
         params: &[Option<Vec<u8>>],
         session_id: &Uuid
     ) -> Result<DbResponse, PgSqliteError> {
-        self.connection_manager.execute_with_session(session_id, |conn| {
+        debug!("execute_with_params called with query: {}", query);
+        debug!("execute_with_params params count: {}", params.len());
+        let result = self.connection_manager.execute_with_session(session_id, |conn| {
             // Process query with fast path optimization
             let processed_query = process_query(query, conn, &self.schema_cache)?;
+            debug!("Processed query: {}", processed_query);
             
             let mut stmt = conn.prepare(&processed_query)?;
             
             // Convert params to rusqlite values
+            // For now, be more aggressive about converting to text since most PostgreSQL
+            // parameters in text mode should be text-compatible
             let values: Vec<rusqlite::types::Value> = params.iter()
                 .map(|p| match p {
                     Some(data) => {
                         match String::from_utf8(data.clone()) {
-                            Ok(s) => rusqlite::types::Value::Text(s),
-                            Err(_) => rusqlite::types::Value::Blob(data.clone()),
+                            Ok(s) => {
+                                // Parameter converted to text
+                                rusqlite::types::Value::Text(s)
+                            },
+                            Err(_e) => {
+                                // For psycopg3 in text mode, all parameters should be UTF-8 text
+                                // If UTF-8 conversion fails, try to recover by using lossy conversion
+                                // UTF-8 conversion failed, trying lossy
+                                let lossy_string = String::from_utf8_lossy(data);
+                                if !lossy_string.is_empty() {
+                                    // Lossy conversion successful
+                                    rusqlite::types::Value::Text(lossy_string.into_owned())
+                                } else {
+                                    // Storing as blob
+                                    rusqlite::types::Value::Blob(data.clone())
+                                }
+                            },
                         }
                     }
-                    None => rusqlite::types::Value::Null,
+                    None => {
+                        // Null parameter
+                        rusqlite::types::Value::Null
+                    },
                 })
                 .collect();
             
             let query_type = QueryTypeDetector::detect_query_type(query);
             
-            match query_type {
+            let result = match query_type {
                 QueryType::Select => {
                     let column_count = stmt.column_count();
                     let mut columns = Vec::with_capacity(column_count);
@@ -277,22 +302,53 @@ impl DbHandler {
                         Ok(row_data)
                     })?.collect();
                     
-                    Ok(DbResponse {
+                    let result_rows = rows?;
+                    debug!("Query returned {} rows", result_rows.len());
+                    DbResponse {
                         columns,
-                        rows: rows?,
+                        rows: result_rows,
                         rows_affected: 0,
-                    })
+                    }
                 }
                 _ => {
                     let rows_affected = stmt.execute(rusqlite::params_from_iter(values.iter()))?;
-                    Ok(DbResponse {
+                    DbResponse {
                         columns: vec![],
                         rows: vec![],
                         rows_affected,
-                    })
+                    }
+                }
+            };
+            
+            // After a successful DML operation, check if we need to trigger WAL refresh
+            // This is needed for autocommit mode where no explicit COMMIT is sent
+            if query_type != QueryType::Select && result.rows_affected > 0 {
+                // Check if we're in autocommit mode
+                if conn.is_autocommit() {
+                    debug!("DML operation completed in autocommit mode, need to trigger WAL refresh for session {}", session_id);
+                    // Note: We can't trigger refresh from within the connection closure
+                    // We'll need to return a flag to the caller
                 }
             }
-        })
+            
+            Ok(result)
+        })?;
+        
+        // After the closure completes, check if we need WAL refresh
+        let query_type = QueryTypeDetector::detect_query_type(query);
+        if query_type != QueryType::Select && result.rows_affected > 0 {
+            // Check if we're in autocommit mode
+            let is_autocommit = self.connection_manager.execute_with_session(session_id, |conn| {
+                Ok(conn.is_autocommit())
+            })?;
+            
+            if is_autocommit {
+                debug!("DML operation completed in autocommit mode, triggering WAL refresh for session {}", session_id);
+                self.connection_manager.refresh_all_other_connections(session_id)?;
+            }
+        }
+        
+        Ok(result)
     }
     
     /// Query without session (uses temporary connection)
@@ -322,6 +378,9 @@ impl DbHandler {
         } else {
             // For file databases, create a temporary connection
             let conn = Self::create_initial_connection(&self.db_path, &Config::load())?;
+            
+            // Register functions on the temporary connection
+            crate::functions::register_all_functions(&conn)?;
             
             // Process query with fast path optimization
             let processed_query = process_query(query, &conn, &self.schema_cache)?;
@@ -544,6 +603,9 @@ impl DbHandler {
         } else {
             let conn = Self::create_initial_connection(&self.db_path, &Config::load())?;
             
+            // Register functions on the temporary connection
+            crate::functions::register_all_functions(&conn)?;
+            
             // Process query with fast path optimization
             let processed_query = process_query(query, &conn, &self.schema_cache)?;
             
@@ -663,9 +725,27 @@ impl DbHandler {
         self.schema_cache.get_or_load(&conn, table_name)
     }
     
-    /// Get schema type for a column
+    /// Get schema type for a column using a dedicated connection
     pub async fn get_schema_type(&self, table_name: &str, column_name: &str) -> Result<Option<String>, rusqlite::Error> {
+        // Create a dedicated connection to read schema data
+        // This ensures we can read committed schema metadata regardless of session isolation
         let conn = Self::create_initial_connection(&self.db_path, &Config::load())?;
+        
+        debug!("get_schema_type: Looking for table='{}', column='{}'", table_name, column_name);
+        
+        // First, check what entries exist in the schema table
+        let mut all_stmt = conn.prepare("SELECT table_name, column_name, pg_type FROM __pgsqlite_schema LIMIT 10")?;
+        let mut rows = all_stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
+        })?;
+        
+        debug!("get_schema_type: Schema table contains:");
+        let mut found_entries = 0;
+        while let Ok(Some(row)) = rows.next().transpose() {
+            found_entries += 1;
+            debug!("  table='{}', column='{}', pg_type='{}'", row.0, row.1, row.2);
+        }
+        debug!("get_schema_type: Found {} total schema entries", found_entries);
         
         let mut stmt = conn.prepare(
             "SELECT pg_type FROM __pgsqlite_schema WHERE table_name = ?1 AND column_name = ?2"
@@ -676,18 +756,279 @@ impl DbHandler {
             row.get::<_, String>(0)
         }).optional()?;
         
+        debug!("get_schema_type: Query result for '{}','{}'= {:?}", table_name, column_name, result);
+        
         Ok(result)
+    }
+    
+    /// Get schema type for a column using the session connection to see uncommitted data
+    pub async fn get_schema_type_with_session(&self, session_id: &Uuid, table_name: &str, column_name: &str) -> Result<Option<String>, PgSqliteError> {
+        debug!("get_schema_type_with_session: Looking for table='{}', column='{}' in session {}", table_name, column_name, session_id);
+        
+        let result = self.with_session_connection(session_id, |conn| {
+            let mut stmt = conn.prepare(
+                "SELECT pg_type FROM __pgsqlite_schema WHERE table_name = ?1 AND column_name = ?2"
+            )?;
+            
+            use rusqlite::OptionalExtension;
+            let result = stmt.query_row([table_name, column_name], |row| {
+                row.get::<_, String>(0)
+            }).optional()?;
+            
+            Ok(result)
+        }).await;
+        
+        match result {
+            Ok(schema_result) => {
+                debug!("get_schema_type_with_session: Query result for '{}','{}' in session {}= {:?}", 
+                       table_name, column_name, session_id, schema_result);
+                Ok(schema_result)
+            }
+            Err(e) => {
+                debug!("get_schema_type_with_session: Error querying schema for '{}','{}': {}", table_name, column_name, e);
+                Err(e)
+            }
+        }
     }
     
     /// Try fast path execution with parameters
     pub async fn try_execute_fast_path_with_params(
         &self,
-        _query: &str,
-        _params: &[rusqlite::types::Value],
-        _session_id: &Uuid,
+        query: &str,
+        params: &[rusqlite::types::Value],
+        session_id: &Uuid,
     ) -> Result<Option<DbResponse>, PgSqliteError> {
-        // For now, always return None to fall back to regular execution
-        Ok(None)
+        
+        // Detect query type before the closure
+        let query_type = QueryTypeDetector::detect_query_type(query);
+        
+        // Use the connection manager to get the session connection
+        let result = self.connection_manager.execute_with_session(session_id, |conn| {
+            // Execute the query directly with rusqlite parameters
+            let mut stmt = conn.prepare(query)?;
+            
+            let response: Result<DbResponse, rusqlite::Error> = match query_type {
+                QueryType::Select => {
+                    let column_count = stmt.column_count();
+                    let mut column_names = Vec::with_capacity(column_count);
+                    for i in 0..column_count {
+                        column_names.push(stmt.column_name(i).unwrap_or("").to_string());
+                    }
+                    
+                    // Build datetime column info for conversion
+                    let mut datetime_columns = std::collections::HashMap::new();
+                    
+                    // Try to extract table name from query for schema lookup
+                    let table_name = regex::Regex::new(r"(?i)FROM\s+(\w+)").unwrap().captures(query).map(|captures| captures[1].to_string());
+                    
+                    
+                    // Look up column types for datetime conversion
+                    if let Some(ref table) = table_name {
+                        for (i, column_name) in column_names.iter().enumerate() {
+                            // Handle aliased columns by extracting the base column name
+                            let base_column_name = if column_name.contains("_") {
+                                // For aliased columns like "users_created_at", try to extract "created_at"
+                                if let Some(underscore_pos) = column_name.rfind('_') {
+                                    &column_name[underscore_pos + 1..]
+                                } else {
+                                    column_name
+                                }
+                            } else {
+                                column_name
+                            };
+                            
+                            // Look up schema type
+                            let mut schema_stmt = conn.prepare(
+                                "SELECT pg_type FROM __pgsqlite_schema WHERE table_name = ?1 AND column_name = ?2"
+                            )?;
+                            
+                            if let Ok(Some(pg_type)) = schema_stmt.query_row([table, base_column_name], |row| {
+                                row.get::<_, String>(0)
+                            }).optional() {
+                                if pg_type == "TIMESTAMP" || pg_type == "TIMESTAMP WITHOUT TIME ZONE" {
+                                    datetime_columns.insert(i, "timestamp");
+                                } else if pg_type == "DATE" {
+                                    datetime_columns.insert(i, "date");
+                                } else if pg_type == "TIME" || pg_type == "TIME WITHOUT TIME ZONE" {
+                                    datetime_columns.insert(i, "time");
+                                }
+                            }
+                        }
+                    }
+                    
+                    let mut rows = Vec::new();
+                    let mut prepared_stmt = stmt.query(rusqlite::params_from_iter(params.iter()))?;
+                    
+                    while let Some(row) = prepared_stmt.next()? {
+                        let mut row_data = Vec::with_capacity(column_count);
+                        for i in 0..column_count {
+                            let value: Option<Vec<u8>> = match row.get_ref(i)? {
+                                rusqlite::types::ValueRef::Null => None,
+                                rusqlite::types::ValueRef::Integer(int_value) => {
+                                    // Check if this column needs datetime conversion
+                                    if let Some(datetime_type) = datetime_columns.get(&i) {
+                                        match *datetime_type {
+                                            "timestamp" => {
+                                                let formatted = crate::types::datetime_utils::format_microseconds_to_timestamp(int_value);
+                                                Some(formatted.into_bytes())
+                                            }
+                                            "date" => {
+                                                let formatted = crate::types::datetime_utils::format_days_to_date(int_value);
+                                                Some(formatted.into_bytes())
+                                            }
+                                            "time" => {
+                                                let formatted = crate::types::datetime_utils::format_microseconds_to_time(int_value);
+                                                Some(formatted.into_bytes())
+                                            }
+                                            _ => Some(int_value.to_string().into_bytes()),
+                                        }
+                                    } else {
+                                        Some(int_value.to_string().into_bytes())
+                                    }
+                                }
+                                rusqlite::types::ValueRef::Real(f) => Some(f.to_string().into_bytes()),
+                                rusqlite::types::ValueRef::Text(s) => Some(s.to_vec()),
+                                rusqlite::types::ValueRef::Blob(b) => Some(b.to_vec()),
+                            };
+                            row_data.push(value);
+                        }
+                        rows.push(row_data);
+                    }
+                    
+                    Ok(DbResponse {
+                        columns: column_names,
+                        rows,
+                        rows_affected: 0,
+                    })
+                }
+                QueryType::Insert | QueryType::Update | QueryType::Delete => {
+                    if query.contains("RETURNING") {
+                        // Handle RETURNING clause
+                        let column_count = stmt.column_count();
+                        let mut column_names = Vec::with_capacity(column_count);
+                        for i in 0..column_count {
+                            column_names.push(stmt.column_name(i).unwrap_or("").to_string());
+                        }
+                        
+                        // Build datetime column info for conversion
+                        let mut datetime_columns = std::collections::HashMap::new();
+                        
+                        // Try to extract table name from query for schema lookup (INSERT/UPDATE/DELETE)
+                        let table_name = regex::Regex::new(r"(?i)(?:INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+(\w+)").unwrap().captures(query).map(|captures| captures[1].to_string());
+                        
+                        // Look up column types for datetime conversion
+                        if let Some(ref table) = table_name {
+                            for (i, column_name) in column_names.iter().enumerate() {
+                                // Handle table-prefixed columns like "users.created_at" -> "created_at"
+                                let base_column_name = if column_name.contains('.') {
+                                    column_name.split('.').next_back().unwrap_or(column_name)
+                                } else {
+                                    column_name
+                                };
+                                
+                                // Look up schema type
+                                let mut schema_stmt = conn.prepare(
+                                    "SELECT pg_type FROM __pgsqlite_schema WHERE table_name = ?1 AND column_name = ?2"
+                                )?;
+                                
+                                if let Ok(Some(pg_type)) = schema_stmt.query_row([table, base_column_name], |row| {
+                                    row.get::<_, String>(0)
+                                }).optional() {
+                                    if pg_type == "TIMESTAMP" || pg_type == "TIMESTAMP WITHOUT TIME ZONE" {
+                                        datetime_columns.insert(i, "timestamp");
+                                    } else if pg_type == "DATE" {
+                                        datetime_columns.insert(i, "date");
+                                    } else if pg_type == "TIME" || pg_type == "TIME WITHOUT TIME ZONE" {
+                                        datetime_columns.insert(i, "time");
+                                    }
+                                }
+                            }
+                        }
+                        
+                        let mut rows = Vec::new();
+                        let mut prepared_stmt = stmt.query(rusqlite::params_from_iter(params.iter()))?;
+                        let mut changes = 0;
+                        
+                        while let Some(row) = prepared_stmt.next()? {
+                            let mut row_data = Vec::with_capacity(column_count);
+                            for i in 0..column_count {
+                                let value: Option<Vec<u8>> = match row.get_ref(i)? {
+                                    rusqlite::types::ValueRef::Null => None,
+                                    rusqlite::types::ValueRef::Integer(int_value) => {
+                                        // Check if this column needs datetime conversion
+                                        if let Some(datetime_type) = datetime_columns.get(&i) {
+                                            match *datetime_type {
+                                                "timestamp" => {
+                                                    let formatted = crate::types::datetime_utils::format_microseconds_to_timestamp(int_value);
+                                                    Some(formatted.into_bytes())
+                                                }
+                                                "date" => {
+                                                    let formatted = crate::types::datetime_utils::format_days_to_date(int_value);
+                                                    Some(formatted.into_bytes())
+                                                }
+                                                "time" => {
+                                                    let formatted = crate::types::datetime_utils::format_microseconds_to_time(int_value);
+                                                    Some(formatted.into_bytes())
+                                                }
+                                                _ => Some(int_value.to_string().into_bytes()),
+                                            }
+                                        } else {
+                                            Some(int_value.to_string().into_bytes())
+                                        }
+                                    }
+                                    rusqlite::types::ValueRef::Real(f) => Some(f.to_string().into_bytes()),
+                                    rusqlite::types::ValueRef::Text(s) => Some(s.to_vec()),
+                                    rusqlite::types::ValueRef::Blob(b) => Some(b.to_vec()),
+                                };
+                                row_data.push(value);
+                            }
+                            rows.push(row_data);
+                            changes += 1;
+                        }
+                        
+                        Ok(DbResponse {
+                            columns: column_names,
+                            rows,
+                            rows_affected: changes,
+                        })
+                    } else {
+                        // Regular DML without RETURNING
+                        let changes = stmt.execute(rusqlite::params_from_iter(params.iter()))?;
+                        
+                        Ok(DbResponse {
+                            columns: vec![],
+                            rows: vec![],
+                            rows_affected: changes,
+                        })
+                    }
+                }
+                _ => {
+                    // Unsupported query type, fall back
+                    return Ok(None);
+                }
+            };
+            
+            Ok(Some(response?))
+        })?;
+        
+        // After a successful DML operation, check if we need to trigger WAL refresh
+        // This is needed for autocommit mode where no explicit COMMIT is sent
+        if let Some(ref response) = result {
+            if query_type != QueryType::Select && response.rows_affected > 0 {
+                // Check if we're in autocommit mode
+                let is_autocommit = self.connection_manager.execute_with_session(session_id, |conn| {
+                    let autocommit = conn.is_autocommit();
+                    Ok(autocommit)
+                })?;
+                
+                if is_autocommit {
+                    debug!("DML operation completed in autocommit mode, triggering WAL refresh for session {}", session_id);
+                    self.connection_manager.refresh_all_other_connections(session_id)?;
+                }
+            }
+        }
+        
+        Ok(result)
     }
     
     /// Query with statement pool and parameters

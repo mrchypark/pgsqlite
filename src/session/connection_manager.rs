@@ -104,7 +104,7 @@ impl ConnectionManager {
         // First try thread-local cache (fast path)
         if let Some(conn_arc) = ThreadLocalConnectionCache::get(session_id) {
             let conn = conn_arc.lock();
-            return f(&*conn).map_err(|e| PgSqliteError::Sqlite(e));
+            return f(&conn).map_err(PgSqliteError::Sqlite);
         }
         
         // Fall back to global map (slow path)
@@ -127,7 +127,7 @@ impl ConnectionManager {
         
         // Now lock the individual connection
         let conn = conn_arc.lock();
-        f(&*conn).map_err(|e| PgSqliteError::Sqlite(e))
+        f(&conn).map_err(PgSqliteError::Sqlite)
     }
     
     /// Execute a query with a cached connection Arc (avoids HashMap lookup)
@@ -140,7 +140,7 @@ impl ConnectionManager {
         F: FnOnce(&Connection) -> Result<R, rusqlite::Error>
     {
         let conn = conn_arc.lock();
-        f(&*conn).map_err(PgSqliteError::Sqlite)
+        f(&conn).map_err(PgSqliteError::Sqlite)
     }
     
     /// Remove a connection when session ends
@@ -185,15 +185,34 @@ impl ConnectionManager {
             // Lock the individual connection
             let conn = conn_arc.lock();
             
-            // Force this connection to read the latest WAL data
-            match conn.query_row("PRAGMA wal_checkpoint(PASSIVE)", [], |_row| Ok(())) {
+            // Force this connection to end its current read transaction and start a new one
+            // This is necessary in WAL mode for the connection to see committed changes
+            // from other connections
+            
+            // First, try to end any active read transaction by executing a dummy query
+            // and ensuring it's fully consumed
+            let _ = conn.query_row("SELECT 1", [], |_row| Ok(()));
+            
+            // Then force a new transaction context by doing a no-op write transaction
+            // This ensures the connection releases its old snapshot and gets a new one
+            match conn.execute_batch("BEGIN IMMEDIATE; ROLLBACK;") {
                 Ok(_) => {
-                    refresh_count += 1;
-                    debug!("Refreshed WAL for session {}", session_id);
+                    // Now do the WAL checkpoint with TRUNCATE mode to force WAL to be fully applied
+                    // and reset the WAL file, ensuring all connections see the latest data
+                    match conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_row| Ok(())) {
+                        Ok(_) => {
+                            refresh_count += 1;
+                            debug!("Refreshed WAL and transaction context for session {}", session_id);
+                        }
+                        Err(e) => {
+                            error_count += 1;
+                            debug!("Failed to checkpoint WAL for session {}: {}", session_id, e);
+                        }
+                    }
                 }
                 Err(e) => {
                     error_count += 1;
-                    debug!("Failed to refresh WAL for session {}: {}", session_id, e);
+                    debug!("Failed to refresh transaction context for session {}: {}", session_id, e);
                 }
             }
         }
@@ -216,7 +235,7 @@ impl ConnectionManager {
         // First try thread-local cache (fast path)
         if let Some(conn_arc) = ThreadLocalConnectionCache::get(session_id) {
             let mut conn = conn_arc.lock();
-            return f(&mut *conn).map_err(|e| PgSqliteError::Sqlite(e));
+            return f(&mut conn).map_err(PgSqliteError::Sqlite);
         }
         
         // Fall back to global map (slow path)
@@ -237,7 +256,7 @@ impl ConnectionManager {
         
         // Now lock the individual connection for mutable access
         let mut conn = conn_arc.lock();
-        f(&mut *conn).map_err(PgSqliteError::Sqlite)
+        f(&mut conn).map_err(PgSqliteError::Sqlite)
     }
     
     /// Get the connection Arc for a session (for caching)
@@ -268,6 +287,6 @@ impl ConnectionManager {
         F: FnOnce(&mut Connection) -> Result<R, rusqlite::Error>
     {
         let mut conn = conn_arc.lock();
-        f(&mut *conn).map_err(PgSqliteError::Sqlite)
+        f(&mut conn).map_err(PgSqliteError::Sqlite)
     }
 }

@@ -160,6 +160,8 @@ impl QueryExecutor {
     where
         T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send,
     {
+        // Executing query
+        
         // Strip SQL comments first to avoid parsing issues
         let cleaned_query = crate::query::strip_sql_comments(query);
         let query_to_execute = cleaned_query.trim();
@@ -167,6 +169,16 @@ impl QueryExecutor {
         // Check if query is empty after comment stripping
         if query_to_execute.is_empty() {
             return Err(PgSqliteError::Protocol("Empty query".to_string()));
+        }
+        
+        // Handle PostgreSQL DEALLOCATE commands (used for prepared statement cleanup)
+        let query_upper = query_to_execute.to_uppercase();
+        if query_upper.starts_with("DEALLOCATE") {
+            debug!("DEALLOCATE command - treating as successful no-op (SQLite manages prepared statements automatically)");
+            // Send CommandComplete for successful DEALLOCATE
+            let msg = BackendMessage::CommandComplete { tag: "DEALLOCATE".to_string() };
+            framed.send(msg).await.map_err(PgSqliteError::Io)?;
+            return Ok(());
         }
         
         // debug!("Executing query: {}", query_to_execute);
@@ -178,7 +190,7 @@ impl QueryExecutor {
             let error_msg = format!(
                 "Python-style parameters detected: {python_params:?}. pgsqlite requires parameter values to be substituted before execution. This usually means psycopg2 client-side substitution failed. Please ensure parameters are properly bound when executing the query."
             );
-            info!("⚠️  {}", error_msg);
+            debug!("⚠️  {}", error_msg);
             debug!("Query: {}", query_to_execute);
             return Err(PgSqliteError::Protocol(error_msg));
         }
@@ -191,6 +203,15 @@ impl QueryExecutor {
                 .map(|s| s.trim())
                 .filter(|s| !s.is_empty())
                 .collect();
+            
+            // Handle empty query case (just semicolon) - SQLAlchemy uses ";" for ping
+            if statements.is_empty() {
+                debug!("Empty query (just semicolon) - treating as successful no-op");
+                // Send CommandComplete for successful empty query
+                let msg = BackendMessage::CommandComplete { tag: "SELECT 0".to_string() };
+                framed.send(msg).await.map_err(PgSqliteError::Io)?;
+                return Ok(());
+            }
             
             if statements.len() > 1 {
                 debug!("Query contains {} statements", statements.len());
@@ -229,8 +250,9 @@ impl QueryExecutor {
             }
         }
         // Ultra-fast path: Skip all translation if query is simple enough
-        if crate::query::simple_query_detector::is_ultra_simple_query(query) {
-            // debug!("Using ultra-fast path for query: {}", query);
+        let is_ultra_simple = crate::query::simple_query_detector::is_ultra_simple_query(query);
+        // Checking if query is ultra-simple
+        if is_ultra_simple {
             // Simple query routing without any processing
             match QueryTypeDetector::detect_query_type(query) {
                 QueryType::Select => {
@@ -252,7 +274,7 @@ impl QueryExecutor {
                         None
                     };
                     
-                    let (boolean_columns, datetime_columns, column_types, column_mappings, enum_columns) = if needs_type_conversion && table_name.is_some() {
+                    let (boolean_columns, mut datetime_columns, column_types, column_mappings, enum_columns) = if needs_type_conversion && table_name.is_some() {
                         let table = table_name.as_ref().unwrap();
                         let schema_info = get_table_schema_info(table, db, &session.id).await;
                         let mappings = extract_column_mappings_from_query(query, table);
@@ -274,6 +296,41 @@ impl QueryExecutor {
                             std::collections::HashMap::new()
                         )
                     };
+                    
+                    // Check for scalar subqueries that return timestamps
+                    // Pattern: (SELECT MAX/MIN(timestamp_col) FROM table) as alias
+                    // Checking for scalar subqueries
+                    for col_name in &response.columns {
+                        // Check if this might be a scalar subquery result
+                        if col_name.contains("max") || col_name.contains("min") || 
+                           col_name.contains("MAX") || col_name.contains("MIN") {
+                            // Column might be scalar subquery
+                            
+                            // Look for the subquery pattern in the original query
+                            // Pattern: (SELECT MAX(col) FROM table)
+                            let pattern = format!(r"(?i)\(\s*SELECT\s+(?:MAX|MIN)\s*\(\s*(\w+)\s*\)\s+FROM\s+(\w+)\s*\)\s+(?:AS\s+)?{}", regex::escape(col_name));
+                            if let Ok(re) = regex::Regex::new(&pattern) {
+                                if let Some(captures) = re.captures(query) {
+                                    if let (Some(inner_col), Some(inner_table)) = (captures.get(1), captures.get(2)) {
+                                        let inner_col_name = inner_col.as_str();
+                                        let inner_table_name = inner_table.as_str();
+                                        // Found scalar subquery
+                                        
+                                        // Check if the inner column is a timestamp
+                                        if let Ok(Some(pg_type)) = db.get_schema_type_with_session(&session.id, inner_table_name, inner_col_name).await {
+                                            // Inner column type found
+                                            if pg_type.to_uppercase().contains("TIMESTAMP") || 
+                                               pg_type.to_uppercase().contains("DATE") || 
+                                               pg_type.to_uppercase().contains("TIME") {
+                                                // Adding datetime column
+                                                datetime_columns.insert(col_name.clone(), pg_type);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                     
                     let fields: Vec<FieldDescription> = response.columns.iter()
                         .enumerate()
@@ -338,13 +395,15 @@ impl QueryExecutor {
                         };
                     
                     // Send data rows with boolean, datetime, and enum conversion
+                    // Processing rows with datetime/boolean conversion
                     for row in response.rows {
                         // Fast path - if no special columns, send row as-is
-                        if boolean_columns.is_empty() && datetime_columns.is_empty() && enum_columns.is_empty() {
-                            framed.send(BackendMessage::DataRow(row)).await
-                                .map_err(PgSqliteError::Io)?;
-                            continue;
-                        }
+                        // DISABLED: We need to check all columns for potential timestamp values
+                        // if boolean_columns.is_empty() && datetime_columns.is_empty() && enum_columns.is_empty() {
+                        //     framed.send(BackendMessage::DataRow(row)).await
+                        //         .map_err(PgSqliteError::Io)?;
+                        //     continue;
+                        // }
                         
                         let converted_row: Vec<Option<Vec<u8>>> = row.into_iter()
                             .enumerate()
@@ -378,7 +437,9 @@ impl QueryExecutor {
                                         else if let Some(dt_type) = datetime_columns.get(col_name)
                                             .or_else(|| {
                                                 // Check if this is an alias mapped to a real column
+                                                // Checking datetime conversion
                                                 if let Some(real_column) = column_mappings.get(col_name) {
+                                                    // Found column mapping
                                                     datetime_columns.get(real_column)
                                                 } else {
                                                     None
@@ -453,7 +514,34 @@ impl QueryExecutor {
                                                 Err(_) => Some(data), // Keep original data if not valid UTF-8
                                             }
                                         } else {
-                                            Some(data) // Keep original data for non-boolean/datetime/enum columns
+                                            // Check if this might be a timestamp in a TEXT column
+                                            // This handles scalar subqueries that return timestamps
+                                            if let Ok(s) = std::str::from_utf8(&data) {
+                                                // Debug logging for scalar subquery columns
+                                                if col_name.contains("max_created") || col_name.contains("MAX(") {
+                                                    info!("Checking column '{}' with value '{}'", col_name, s);
+                                                }
+                                                if let Ok(micros) = s.parse::<i64>() {
+                                                    // Check if this looks like microseconds since epoch
+                                                    // Valid timestamp range: roughly 1970-2100 (0 to ~4.1 trillion microseconds)
+                                                    // We check for values > 100 billion to avoid converting small integers
+                                                    if micros > 100_000_000_000 && micros < 4_102_444_800_000_000 {
+                                                        // This is likely a datetime value stored as INTEGER microseconds
+                                                        use crate::types::datetime_utils::format_microseconds_to_timestamp_buf;
+                                                        let mut buf = vec![0u8; 32];
+                                                        let len = format_microseconds_to_timestamp_buf(micros, &mut buf);
+                                                        buf.truncate(len);
+                                                        info!("Converting TEXT column '{}' timestamp value {} to formatted", col_name, micros);
+                                                        Some(buf)
+                                                    } else {
+                                                        Some(data) // Not a timestamp range
+                                                    }
+                                                } else {
+                                                    Some(data) // Not an integer
+                                                }
+                                            } else {
+                                                Some(data) // Not valid UTF-8
+                                            }
                                         }
                                     } else {
                                         Some(data) // Keep original data if column index is out of bounds
@@ -488,20 +576,25 @@ impl QueryExecutor {
         let translation_flags = crate::translator::QueryAnalyzer::analyze(query);
         debug!("Query analysis flags: {:?}", translation_flags);
         
-        // Translate PostgreSQL cast syntax if present
+        // Translate PostgreSQL cast syntax if present and collect metadata
+        let mut translation_metadata = crate::translator::TranslationMetadata::new();
         let mut translated_query = if translation_flags.contains(crate::translator::TranslationFlags::CAST) {
             if crate::profiling::is_profiling_enabled() {
                 crate::time_cast_translation!({
                     use crate::translator::CastTranslator;
-                    db.with_session_connection(&session.id, |conn| {
-                        Ok(CastTranslator::translate_query(query, Some(conn)))
-                    }).await?
+                    let (translated, metadata) = db.with_session_connection(&session.id, |conn| {
+                        Ok(CastTranslator::translate_with_metadata(query, Some(conn)))
+                    }).await?;
+                    translation_metadata.merge(metadata);
+                    translated
                 })
             } else {
                 use crate::translator::CastTranslator;
-                db.with_session_connection(&session.id, |conn| {
-                    Ok(CastTranslator::translate_query(query, Some(conn)))
-                }).await?
+                let (translated, metadata) = db.with_session_connection(&session.id, |conn| {
+                    Ok(CastTranslator::translate_with_metadata(query, Some(conn)))
+                }).await?;
+                translation_metadata.merge(metadata);
+                translated
             }
         } else {
             query.to_string()
@@ -598,7 +691,7 @@ impl QueryExecutor {
         }
         
         // Translate PostgreSQL datetime functions if present and capture metadata
-        let mut translation_metadata = crate::translator::TranslationMetadata::new();
+        // translation_metadata already initialized above with cast metadata
         if translation_flags.contains(crate::translator::TranslationFlags::DATETIME) {
             if crate::profiling::is_profiling_enabled() {
                 crate::time_datetime_translation!({
@@ -636,6 +729,13 @@ impl QueryExecutor {
             
             // Note: JSON path $ restoration will happen right before SQLite execution
             debug!("Query after JSON translation ($ placeholders preserved): {}", translated_query);
+        }
+        
+        // Translate catalog functions (remove pg_catalog prefix)
+        {
+            use crate::translator::{CatalogFunctionTranslator, PgTableIsVisibleTranslator};
+            translated_query = CatalogFunctionTranslator::translate(&translated_query);
+            translated_query = PgTableIsVisibleTranslator::translate(&translated_query);
         }
         
         // Translate array operators with metadata
@@ -747,6 +847,7 @@ impl QueryExecutor {
         debug!("Query type detected: {:?} for query: {}", query_type, query_to_execute);
         match query_type {
             QueryType::Select => {
+                // debug!("Detected SELECT, calling execute_select for query: {}", query_to_execute);
                 debug!("Calling execute_select for query: {}", query_to_execute);
                 Self::execute_select(framed, db, session, query_to_execute, &translation_metadata, query_router).await
             },
@@ -782,6 +883,7 @@ impl QueryExecutor {
     where
         T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send,
     {
+        // debug!("execute_select (non-ultra-simple) called with query: {}", query);
         // SQLAlchemy manages transactions explicitly - don't start implicit transactions
         // debug!("=== EXECUTE_SELECT CALLED with query: {}", query);
         
@@ -811,8 +913,10 @@ impl QueryExecutor {
         }
         
         // Check if this is a catalog query first
-        // TODO: Fix CatalogInterceptor to accept &DbHandler instead of Arc<DbHandler>
-        let response = {
+        let response = if let Some(catalog_result) = crate::catalog::CatalogInterceptor::intercept_query(query, db.clone(), Some(session.clone())).await {
+            info!("Query intercepted by catalog handler");
+            catalog_result?
+        } else {
             // Route query through query router if available
             if let Some(router) = query_router {
                 router.execute_query(query, session).await.map_err(|e| PgSqliteError::Protocol(e.to_string()))?
@@ -824,7 +928,16 @@ impl QueryExecutor {
         
         // Extract table name from query to look up schema
         let table_name = extract_table_name_from_select(query);
+        // debug!("Non-ultra execute_select: table_name={:?}", table_name);
         // debug!("Table name extraction result: {:?} for query: {}", table_name, query);
+        
+        // Extract column mappings for aliased columns (e.g., "column AS alias")
+        let column_mappings = if let Some(ref table) = table_name {
+            // debug!("Non-ultra execute_select: column_mappings={:?}", mappings);
+            extract_column_mappings_from_query(query, table)
+        } else {
+            std::collections::HashMap::new()
+        };
         
         // For JOIN queries, extract all tables and build column mappings
         // Optimized: check for JOIN without converting entire query to uppercase
@@ -869,7 +982,7 @@ impl QueryExecutor {
                         debug!("Type inference: JOIN query column '{}' mapped to table '{}', actual column '{}'", 
                               col_name, table, actual_column);
                         
-                        if let Ok(Some(pg_type)) = db.get_schema_type(table, actual_column).await {
+                        if let Ok(Some(pg_type)) = db.get_schema_type_with_session(&session.id, table, actual_column).await {
                             debug!("Type inference: Found schema type for '{}.{}' (via JOIN mapping) -> {}", table, actual_column, pg_type);
                             schema_types.insert(col_name.clone(), pg_type);
                         } else {
@@ -890,12 +1003,12 @@ impl QueryExecutor {
                 // Fetch types for actual columns
                 for col_name in &response.columns {
                     // Try direct lookup first
-                    if let Ok(Some(pg_type)) = db.get_schema_type(table, col_name).await {
+                    if let Ok(Some(pg_type)) = db.get_schema_type_with_session(&session.id, table, col_name).await {
                         debug!("Type inference: Found schema type for '{}.{}' -> {}", table, col_name, pg_type);
                         schema_types.insert(col_name.clone(), pg_type);
                     } else if let Some(source_column) = column_mappings.get(col_name) {
                         // Try using the column mapping from SELECT clause
-                        if let Ok(Some(pg_type)) = db.get_schema_type(table, source_column).await {
+                        if let Ok(Some(pg_type)) = db.get_schema_type_with_session(&session.id, table, source_column).await {
                             debug!("Type inference: Found schema type for '{}.{}' (via SELECT mapping {}) -> {}", table, source_column, col_name, pg_type);
                             schema_types.insert(col_name.clone(), pg_type);
                             continue;
@@ -939,7 +1052,7 @@ impl QueryExecutor {
                                     (potential_table_single, potential_col_double.as_str()),
                                 ] {
                                     debug!("Type inference: Trying combination table='{}', col='{}'", try_table, try_col);
-                                    if let Ok(Some(pg_type)) = db.get_schema_type(try_table, try_col).await {
+                                    if let Ok(Some(pg_type)) = db.get_schema_type_with_session(&session.id, try_table, try_col).await {
                                         debug!("Type inference: Found schema type for '{}.{}' (via pattern matching {}) -> {}", try_table, try_col, col_name, pg_type);
                                         schema_types.insert(col_name.clone(), pg_type);
                                         break;
@@ -949,7 +1062,7 @@ impl QueryExecutor {
                         }
                         
                         if potential_column != col_name {
-                            if let Ok(Some(pg_type)) = db.get_schema_type(table, potential_column).await {
+                            if let Ok(Some(pg_type)) = db.get_schema_type_with_session(&session.id, table, potential_column).await {
                                 debug!("Type inference: Found schema type for '{}.{}' (via alias {}) -> {}", table, potential_column, col_name, pg_type);
                                 schema_types.insert(col_name.clone(), pg_type);
                                 continue;
@@ -968,7 +1081,7 @@ impl QueryExecutor {
                 for col_name in &response.columns {
                     if let Some(hint) = translation_metadata.get_hint(col_name) {
                         if let Some(ref source_col) = hint.source_column {
-                            if let Ok(Some(source_type)) = db.get_schema_type(table, source_col).await {
+                            if let Ok(Some(source_type)) = db.get_schema_type_with_session(&session.id, table, source_col).await {
                                 hint_source_types.insert(col_name.clone(), source_type);
                             }
                         }
@@ -1074,11 +1187,194 @@ impl QueryExecutor {
             .map_err(PgSqliteError::Io)?;
         
         
+        // Build datetime column info for conversion
+        let mut datetime_columns = std::collections::HashMap::new();
+        let mut column_types_map = std::collections::HashMap::new();
+        
+        // Check for scalar subqueries that return timestamps (same logic as ultra-simple path)
+        info!("Non-ultra path: Checking for scalar subqueries in columns: {:?}", response.columns);
+        for col_name in &response.columns {
+            // Check if this might be a scalar subquery result
+            if col_name.contains("max") || col_name.contains("min") || 
+               col_name.contains("MAX") || col_name.contains("MIN") {
+                info!("Non-ultra path: Column '{}' might be a scalar subquery result", col_name);
+                
+                // Look for the subquery pattern in the original query
+                // Pattern: (SELECT MAX(col) FROM table)
+                let pattern = format!(r"(?i)\(\s*SELECT\s+(?:MAX|MIN)\s*\(\s*(\w+)\s*\)\s+FROM\s+(\w+)\s*\)\s+(?:AS\s+)?{}", regex::escape(col_name));
+                if let Ok(re) = regex::Regex::new(&pattern) {
+                    if let Some(captures) = re.captures(query) {
+                        if let (Some(inner_col), Some(inner_table)) = (captures.get(1), captures.get(2)) {
+                            let inner_col_name = inner_col.as_str();
+                            let inner_table_name = inner_table.as_str();
+                            info!("Non-ultra path: Found scalar subquery: MAX/MIN({}) FROM {}", inner_col_name, inner_table_name);
+                            
+                            // Check if the inner column is a timestamp
+                            if let Ok(Some(pg_type)) = db.get_schema_type_with_session(&session.id, inner_table_name, inner_col_name).await {
+                                info!("Non-ultra path: Inner column type: {}", pg_type);
+                                if pg_type.to_uppercase().contains("TIMESTAMP") || 
+                                   pg_type.to_uppercase().contains("DATE") || 
+                                   pg_type.to_uppercase().contains("TIME") {
+                                    info!("Non-ultra path: Adding '{}' as datetime column (type: {})", col_name, pg_type);
+                                    datetime_columns.insert(col_name.clone(), pg_type);
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                // Also check for direct MAX/MIN without subquery
+                // Pattern: MAX(created_at) or MIN(created_at)
+                let direct_pattern = r"(?i)(?:MAX|MIN)\s*\(\s*(\w+)\s*\)";
+                if let Ok(re) = regex::Regex::new(direct_pattern) {
+                    if let Some(captures) = re.captures(col_name) {
+                        if let Some(inner_col) = captures.get(1) {
+                            let inner_col_name = inner_col.as_str();
+                            info!("Non-ultra path: Found direct aggregate: {}", col_name);
+                            
+                            // Try all tables in the query to find the column
+                            if let Some(ref table) = table_name {
+                                if let Ok(Some(pg_type)) = db.get_schema_type_with_session(&session.id, table, inner_col_name).await {
+                                    info!("Non-ultra path: Direct aggregate column type: {}", pg_type);
+                                    if pg_type.to_uppercase().contains("TIMESTAMP") || 
+                                       pg_type.to_uppercase().contains("DATE") || 
+                                       pg_type.to_uppercase().contains("TIME") {
+                                        info!("Non-ultra path: Adding '{}' as datetime column from direct aggregate (type: {})", col_name, pg_type);
+                                        datetime_columns.insert(col_name.clone(), pg_type);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        if let Some(ref table) = table_name {
+            // First check aliased columns using column mappings
+            for (col_idx, col_name) in response.columns.iter().enumerate() {
+                // Check if this is an aliased column
+                if let Some(source_column) = column_mappings.get(col_name) {
+                    // Look up the source column type
+                    if let Ok(Some(pg_type)) = db.get_schema_type_with_session(&session.id, table, source_column).await {
+                        column_types_map.insert(col_idx, pg_type.clone());
+                        
+                        // Check if it's a datetime type
+                        match pg_type.to_uppercase().as_str() {
+                            "DATE" | "TIME" | "TIME WITHOUT TIME ZONE" | "TIME WITH TIME ZONE" | "TIMETZ" |
+                            "TIMESTAMP" | "TIMESTAMP WITHOUT TIME ZONE" | "TIMESTAMP WITH TIME ZONE" | "TIMESTAMPTZ" => {
+                                datetime_columns.insert(col_name.clone(), pg_type);
+                            }
+                            _ => {}
+                        }
+                    }
+                } else {
+                    // Check if this is a wildcard pattern (table.*)
+                    // If the query contains "table.*" and we have no explicit mappings, 
+                    // treat each column as mapping to itself
+                    let wildcard_pattern = format!("{table}.*");
+                    if query.contains(&wildcard_pattern) && column_mappings.is_empty() {
+                        // For wildcard queries, map each column to itself
+                        // Use session connection to look up schema information
+                        if let Ok(Some(pg_type)) = db.with_session_connection(&session.id, |conn| {
+                            let mut stmt = conn.prepare(
+                                "SELECT pg_type FROM __pgsqlite_schema WHERE table_name = ?1 AND column_name = ?2"
+                            )?;
+                            
+                            use rusqlite::OptionalExtension;
+                            let result = stmt.query_row([table, col_name], |row| {
+                                row.get::<_, String>(0)
+                            }).optional()?;
+                            
+                            Ok::<Option<String>, rusqlite::Error>(result)
+                        }).await {
+                            column_types_map.insert(col_idx, pg_type.clone());
+                            
+                            // Check if it's a datetime type
+                            match pg_type.to_uppercase().as_str() {
+                                "DATE" | "TIME" | "TIME WITHOUT TIME ZONE" | "TIME WITH TIME ZONE" | "TIMETZ" |
+                                "TIMESTAMP" | "TIMESTAMP WITHOUT TIME ZONE" | "TIMESTAMP WITH TIME ZONE" | "TIMESTAMPTZ" => {
+                                    datetime_columns.insert(col_name.clone(), pg_type);
+                                }
+                                _ => {}
+                            }
+                        }
+                    } else {
+                        // Try direct lookup for non-aliased columns
+                        if let Ok(Some(pg_type)) = db.get_schema_type_with_session(&session.id, table, col_name).await {
+                            column_types_map.insert(col_idx, pg_type.clone());
+                            
+                            // Check if it's a datetime type
+                            match pg_type.to_uppercase().as_str() {
+                                "DATE" | "TIME" | "TIME WITHOUT TIME ZONE" | "TIME WITH TIME ZONE" | "TIMETZ" |
+                                "TIMESTAMP" | "TIMESTAMP WITHOUT TIME ZONE" | "TIMESTAMP WITH TIME ZONE" | "TIMESTAMPTZ" => {
+                                    datetime_columns.insert(col_name.clone(), pg_type);
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        
         // Convert array data before sending rows
         debug!("Converting array data for {} rows", response.rows.len());
         debug!("About to convert array data for {} rows", response.rows.len());
-        let converted_rows = Self::convert_array_data_in_rows(response.rows, &fields)?;
+        let mut converted_rows = Self::convert_array_data_in_rows(response.rows, &fields)?;
         debug!("Completed array data conversion");
+        
+        // Convert datetime data if needed
+        if !datetime_columns.is_empty() {
+            // debug!("Converting datetime values for {} columns", datetime_columns.len());
+            for row in &mut converted_rows {
+                for (col_idx, col_name) in response.columns.iter().enumerate() {
+                    if let Some(pg_type) = datetime_columns.get(col_name) {
+                        if let Some(Some(value_bytes)) = row.get_mut(col_idx) {
+                            // Apply datetime conversion
+                            match pg_type.to_uppercase().as_str() {
+                                "DATE" => {
+                                    if let Ok(value_str) = std::str::from_utf8(value_bytes) {
+                                        if let Ok(days) = value_str.parse::<i32>() {
+                                            use crate::types::datetime_utils::format_days_to_date_buf;
+                                            let mut buf = vec![0u8; 32];
+                                            let len = format_days_to_date_buf(days, &mut buf);
+                                            buf.truncate(len);
+                                            *value_bytes = buf;
+                                        }
+                                    }
+                                }
+                                "TIME" | "TIME WITHOUT TIME ZONE" | "TIME WITH TIME ZONE" | "TIMETZ" => {
+                                    if let Ok(value_str) = std::str::from_utf8(value_bytes) {
+                                        if let Ok(micros) = value_str.parse::<i64>() {
+                                            use crate::types::datetime_utils::format_microseconds_to_time_buf;
+                                            let mut buf = vec![0u8; 32];
+                                            let len = format_microseconds_to_time_buf(micros, &mut buf);
+                                            buf.truncate(len);
+                                            *value_bytes = buf;
+                                        }
+                                    }
+                                }
+                                "TIMESTAMP" | "TIMESTAMP WITHOUT TIME ZONE" | "TIMESTAMP WITH TIME ZONE" | "TIMESTAMPTZ" => {
+                                    if let Ok(value_str) = std::str::from_utf8(value_bytes) {
+                                        if let Ok(micros) = value_str.parse::<i64>() {
+                                            // debug!("Converting timestamp {} for column '{}'", micros, col_name);
+                                            use crate::types::datetime_utils::format_microseconds_to_timestamp_buf;
+                                            let mut buf = vec![0u8; 32];
+                                            let len = format_microseconds_to_timestamp_buf(micros, &mut buf);
+                                            buf.truncate(len);
+                                            *value_bytes = buf;
+                                        }
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+            }
+        }
         
         // Store row count before potential move
         let row_count = converted_rows.len();
@@ -1329,7 +1625,7 @@ impl QueryExecutor {
             
             // Try to get type information from schema
             if let Some(ref table) = table_name {
-                if let Ok(Some(schema_type)) = db.get_schema_type(table, col_name).await {
+                if let Ok(Some(schema_type)) = db.get_schema_type_with_session(&session.id, table, col_name).await {
                     pg_type = Some(schema_type.clone());
                     type_oid = crate::types::SchemaTypeMapper::pg_type_string_to_oid(&schema_type);
                 }
@@ -1349,7 +1645,7 @@ impl QueryExecutor {
         }
         
         framed.send(BackendMessage::RowDescription(fields)).await
-            .map_err(|e| PgSqliteError::Io(e))?;
+            .map_err(PgSqliteError::Io)?;
         
         // Send data rows with proper type conversion
         let mut row_count = 0;
@@ -1422,7 +1718,7 @@ impl QueryExecutor {
             }
             
             framed.send(BackendMessage::DataRow(converted_row)).await
-                .map_err(|e| PgSqliteError::Io(e))?;
+                .map_err(PgSqliteError::Io)?;
             row_count += 1;
         }
         
@@ -1436,7 +1732,7 @@ impl QueryExecutor {
         };
         
         framed.send(BackendMessage::CommandComplete { tag }).await
-            .map_err(|e| PgSqliteError::Io(e))?;
+            .map_err(PgSqliteError::Io)?;
         
         Ok(())
     }
@@ -1531,7 +1827,7 @@ impl QueryExecutor {
                 EnumTriggers::clean_enum_usage_for_table(conn, &table_name)
                     .map_err(|e| rusqlite::Error::SqliteFailure(
                         rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_ERROR),
-                        Some(format!("Failed to clean enum usage for table {}: {}", table_name, e))
+                        Some(format!("Failed to clean enum usage for table {table_name}: {e}"))
                     ))
             }).await?;
             debug!("Cleaned up enum usage records for dropped table: {}", table_name);
@@ -2094,6 +2390,8 @@ fn extract_table_name_from_select(query: &str) -> Option<String> {
     use once_cell::sync::Lazy;
     use regex::Regex;
     
+    // debug!("extract_table_name_from_select called with query: {}", query);
+    
     static FROM_TABLE_REGEX: Lazy<Regex> = Lazy::new(|| {
         Regex::new(r"(?i)\bFROM\s+([^\s,;()]+)").unwrap()
     });
@@ -2106,12 +2404,14 @@ fn extract_table_name_from_select(query: &str) -> Option<String> {
             let table_name = table_name.trim_matches('"').trim_matches('\'');
             
             if !table_name.is_empty() {
+                // debug!("extract_table_name_from_select: extracted table='{}'", table_name);
                 debug!("extract_table_name_from_select: query='{}' -> table='{}'", query, table_name);
                 return Some(table_name.to_string());
             }
         }
     }
     
+    // debug!("extract_table_name_from_select: failed to extract table name");
     debug!("extract_table_name_from_select: query='{}' -> None", query);
     None
 }
@@ -2123,25 +2423,74 @@ fn extract_column_mappings_from_query(query: &str, table: &str) -> std::collecti
     
     let mut mappings = HashMap::new();
     
-    // Match patterns like "table.column_name AS alias"
-    let re = Regex::new(&format!(
+    debug!("extract_column_mappings_from_query: query='{}', table='{}'", query, table);
+    
+    // First, try to match patterns like "table.column_name AS alias"
+    let table_pattern = Regex::new(&format!(
         r"(?i)\b{}\.(\w+)\s+AS\s+(\w+)",
         regex::escape(table)
-    )).unwrap_or_else(|_| {
-        // Fallback pattern - just match any alias pattern
-        Regex::new(r"(?i)\b(\w+)\s+AS\s+(\w+)").unwrap()
-    });
+    ));
     
-    for captures in re.captures_iter(query) {
-        if let (Some(source_col), Some(alias)) = (captures.get(1), captures.get(2)) {
-            let source_column = source_col.as_str().to_string();
-            let alias_name = alias.as_str().to_string();
-            
-            debug!("Column mapping: {} -> {}", alias_name, source_column);
-            mappings.insert(alias_name, source_column);
+    if let Ok(re) = table_pattern {
+        debug!("Table pattern regex created: {:?}", re.as_str());
+        let matches_found = re.captures_iter(query).count();
+        debug!("Table pattern matches found: {}", matches_found);
+        
+        for captures in re.captures_iter(query) {
+            if let (Some(source_col), Some(alias)) = (captures.get(1), captures.get(2)) {
+                let source_column = source_col.as_str().to_string();
+                let alias_name = alias.as_str().to_string();
+                
+                debug!("Column mapping (with table prefix): {} -> {}.{}", alias_name, table, source_column);
+                mappings.insert(alias_name, source_column);
+            }
+        }
+    } else {
+        debug!("Failed to create table pattern regex");
+    }
+    
+    // Also match simple patterns like "column_name AS alias" (without table prefix)
+    // This is common in queries like "SELECT id AS event_id, created_at AS event_created_at FROM events"
+    // BUT we need to be careful not to match the table name in "table.column AS alias" patterns
+    let simple_pattern = Regex::new(r"(?i)(?:^|,|\s)(\w+)\s+AS\s+(\w+)");
+    
+    if let Ok(re) = simple_pattern {
+        for captures in re.captures_iter(query) {
+            if let (Some(source_col), Some(alias)) = (captures.get(1), captures.get(2)) {
+                let source_column = source_col.as_str().to_string();
+                let alias_name = alias.as_str().to_string();
+                
+                // Only add if we haven't already found this alias with a table prefix
+                // (table-prefixed mappings are more specific and should take precedence)
+                if let std::collections::hash_map::Entry::Vacant(e) = mappings.entry(alias_name.clone()) {
+                    // Check if this is actually a table name (if the character before it is a dot)
+                    // We need to look at the full match to see if there's a dot before
+                    let _full_match = captures.get(0).unwrap().as_str();
+                    // Skip if this looks like it's part of a table.column pattern
+                    // (i.e., the source_column is actually the table name)
+                    if !query.contains(&format!("{source_column}.{alias_name}")) &&
+                       !query.contains(&format!("{source_column}.")) {
+                        debug!("Column mapping (simple alias): {} -> {}", alias_name, source_column);
+                        e.insert(source_column);
+                    }
+                }
+            }
         }
     }
     
+    // Handle wildcard patterns like "table.*" 
+    // For these, we need to map each actual column back to itself for datetime conversion
+    let wildcard_pattern = Regex::new(&format!(r"(?i)\b{}\.\*", regex::escape(table)));
+    if let Ok(re) = wildcard_pattern {
+        if re.is_match(query) {
+            debug!("Detected wildcard pattern for table: {}", table);
+            // For wildcard patterns, we'll let the caller handle the actual column mapping
+            // by checking if the query contains "table.*" and then looking at actual column names
+            // This is handled in the execute_select function
+        }
+    }
+    
+    debug!("Final column mappings: {:?}", mappings);
     mappings
 }
 
