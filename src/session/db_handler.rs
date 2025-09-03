@@ -10,6 +10,22 @@ use crate::validator::StringConstraintValidator;
 use crate::session::ConnectionManager;
 use crate::PgSqliteError;
 use crate::cache::StatementPool;
+
+#[inline(always)]
+fn is_select_query_fast(sql: &str) -> bool {
+    let b = sql.as_bytes();
+    let mut i = 0;
+    while i < b.len() && (b[i] == b' ' || b[i] == b'\t' || b[i] == b'\n' || b[i] == b'\r') {
+        i += 1;
+    }
+    if i + 6 > b.len() { return false; }
+    // Compare case-insensitively to "SELECT"
+    let target = b"SELECT";
+    for j in 0..6 {
+        if b[i + j].to_ascii_uppercase() != target[j] { return false; }
+    }
+    true
+}
 use tracing::debug;
 
 /// Database response structure
@@ -394,7 +410,7 @@ impl DbHandler {
             let resp = self.connection_manager.execute_with_session(session_id, |conn| {
                 // Process query with fast path optimization
                 let processed_query = process_query(query, conn, &self.schema_cache)?;
-                if processed_query.trim_start().to_uppercase().starts_with("SELECT") {
+                if is_select_query_fast(&processed_query) {
                     let (columns, rows) = StatementPool::global().query_cached(conn, &processed_query, [])?;
                     Ok(DbResponse { columns, rows, rows_affected: 0 })
                 } else {
@@ -479,7 +495,7 @@ impl DbHandler {
                     // Process query with fast path optimization
                     let processed_query = process_query(query, conn, &self.schema_cache)?;
                     
-                    if processed_query.trim_start().to_uppercase().starts_with("SELECT") {
+                    if is_select_query_fast(&processed_query) {
                         let (columns, rows) = StatementPool::global().query_cached(conn, &processed_query, [])?;
                         Ok(DbResponse { columns, rows, rows_affected: 0 })
                     } else {
@@ -556,7 +572,7 @@ impl DbHandler {
             // Process query with fast path optimization
             let processed_query = process_query(query, conn, &self.schema_cache)?;
             
-            if processed_query.trim_start().to_uppercase().starts_with("SELECT") {
+            if is_select_query_fast(&processed_query) {
                 let (columns, rows) = StatementPool::global().query_cached(conn, &processed_query, [])?;
                 Ok(DbResponse { columns, rows, rows_affected: 0 })
             } else {
