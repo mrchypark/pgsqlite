@@ -31,6 +31,8 @@ pub struct DbHandler {
     string_validator: Arc<StringConstraintValidator>,
     statement_cache_optimizer: Arc<StatementCacheOptimizer>,
     db_path: String,
+    // Default session for compatibility methods like query()/execute()
+    default_session_id: Uuid,
 }
 
 impl DbHandler {
@@ -59,6 +61,15 @@ impl DbHandler {
             db_path.to_string(),
             Arc::new(config.clone())
         ));
+        // Create a default session connection for non-session APIs
+        let default_session_id = Uuid::new_v4();
+        // Use connection manager to create and initialize the connection
+        connection_manager
+            .create_connection(default_session_id)
+            .map_err(|e| rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_ERROR),
+                Some(format!("Failed to create default session connection: {e}"))
+            ))?;
         
         // DbHandler initialized
         
@@ -68,6 +79,7 @@ impl DbHandler {
             string_validator: Arc::new(StringConstraintValidator::new()),
             statement_cache_optimizer,
             db_path: db_path.to_string(),
+            default_session_id,
         })
     }
     
@@ -377,42 +389,43 @@ impl DbHandler {
             self.remove_session_connection(&temp_session);
             Ok(result)
         } else {
-            // For file databases, create a temporary connection
-            let conn = Self::create_initial_connection(&self.db_path, &Config::load())?;
-            
-            // Register functions on the temporary connection
-            crate::functions::register_all_functions(&conn)?;
-            
-            // Process query with fast path optimization
-            let processed_query = process_query(query, &conn, &self.schema_cache)?;
-            
-            // Use statement pool for simple SELECTs to avoid prepare overhead
-            if processed_query.trim_start().to_uppercase().starts_with("SELECT") {
-                let (columns, rows) = StatementPool::global().query_cached(&conn, &processed_query, [])?;
-                Ok(DbResponse { columns, rows, rows_affected: 0 })
-            } else {
-                let mut stmt = conn.prepare(&processed_query)?;
-                let column_count = stmt.column_count();
-                let mut columns = Vec::with_capacity(column_count);
-                for i in 0..column_count {
-                    columns.push(stmt.column_name(i)?.to_string());
-                }
-                let rows: Result<Vec<_>, _> = stmt.query_map([], |row| {
-                    let mut row_data = Vec::with_capacity(column_count);
+            // For file databases, use the default session's connection (single-connection baseline)
+            let session_id = &self.default_session_id;
+            let resp = self.connection_manager.execute_with_session(session_id, |conn| {
+                // Process query with fast path optimization
+                let processed_query = process_query(query, conn, &self.schema_cache)?;
+                if processed_query.trim_start().to_uppercase().starts_with("SELECT") {
+                    let (columns, rows) = StatementPool::global().query_cached(conn, &processed_query, [])?;
+                    Ok(DbResponse { columns, rows, rows_affected: 0 })
+                } else {
+                    let mut stmt = conn.prepare(&processed_query)?;
+                    let column_count = stmt.column_count();
+                    let mut columns = Vec::with_capacity(column_count);
                     for i in 0..column_count {
-                        let value: Option<rusqlite::types::Value> = row.get(i)?;
-                        row_data.push(match value {
-                            Some(rusqlite::types::Value::Text(s)) => Some(s.into_bytes()),
-                            Some(rusqlite::types::Value::Integer(i)) => Some(i.to_string().into_bytes()),
-                            Some(rusqlite::types::Value::Real(f)) => Some(f.to_string().into_bytes()),
-                            Some(rusqlite::types::Value::Blob(b)) => Some(b),
-                            Some(rusqlite::types::Value::Null) | None => None,
-                        });
+                        columns.push(stmt.column_name(i)?.to_string());
                     }
-                    Ok(row_data)
-                })?.collect();
-                Ok(DbResponse { columns, rows: rows?, rows_affected: 0 })
-            }
+                    let rows: Result<Vec<_>, _> = stmt.query_map([], |row| {
+                        let mut row_data = Vec::with_capacity(column_count);
+                        for i in 0..column_count {
+                            let value: Option<rusqlite::types::Value> = row.get(i)?;
+                            row_data.push(match value {
+                                Some(rusqlite::types::Value::Text(s)) => Some(s.into_bytes()),
+                                Some(rusqlite::types::Value::Integer(i)) => Some(i.to_string().into_bytes()),
+                                Some(rusqlite::types::Value::Real(f)) => Some(f.to_string().into_bytes()),
+                                Some(rusqlite::types::Value::Blob(b)) => Some(b),
+                                Some(rusqlite::types::Value::Null) | None => None,
+                            });
+                        }
+                        Ok(row_data)
+                    })?.collect();
+                    Ok(DbResponse { columns, rows: rows?, rows_affected: 0 })
+                }
+            })
+            .map_err(|e| rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_ERROR),
+                Some(format!("Query error: {e}"))
+            ))?;
+            Ok(resp)
         }
     }
     
