@@ -9,6 +9,7 @@ use crate::migration::MigrationRunner;
 use crate::validator::StringConstraintValidator;
 use crate::session::ConnectionManager;
 use crate::PgSqliteError;
+use crate::cache::StatementPool;
 use tracing::debug;
 
 /// Database response structure
@@ -385,33 +386,33 @@ impl DbHandler {
             // Process query with fast path optimization
             let processed_query = process_query(query, &conn, &self.schema_cache)?;
             
-            let mut stmt = conn.prepare(&processed_query)?;
-            let column_count = stmt.column_count();
-            let mut columns = Vec::with_capacity(column_count);
-            for i in 0..column_count {
-                columns.push(stmt.column_name(i)?.to_string());
-            }
-            
-            let rows: Result<Vec<_>, _> = stmt.query_map([], |row| {
-                let mut row_data = Vec::with_capacity(column_count);
+            // Use statement pool for simple SELECTs to avoid prepare overhead
+            if processed_query.trim_start().to_uppercase().starts_with("SELECT") {
+                let (columns, rows) = StatementPool::global().query_cached(&conn, &processed_query, [])?;
+                Ok(DbResponse { columns, rows, rows_affected: 0 })
+            } else {
+                let mut stmt = conn.prepare(&processed_query)?;
+                let column_count = stmt.column_count();
+                let mut columns = Vec::with_capacity(column_count);
                 for i in 0..column_count {
-                    let value: Option<rusqlite::types::Value> = row.get(i)?;
-                    row_data.push(match value {
-                        Some(rusqlite::types::Value::Text(s)) => Some(s.into_bytes()),
-                        Some(rusqlite::types::Value::Integer(i)) => Some(i.to_string().into_bytes()),
-                        Some(rusqlite::types::Value::Real(f)) => Some(f.to_string().into_bytes()),
-                        Some(rusqlite::types::Value::Blob(b)) => Some(b),
-                        Some(rusqlite::types::Value::Null) | None => None,
-                    });
+                    columns.push(stmt.column_name(i)?.to_string());
                 }
-                Ok(row_data)
-            })?.collect();
-            
-            Ok(DbResponse {
-                columns,
-                rows: rows?,
-                rows_affected: 0,
-            })
+                let rows: Result<Vec<_>, _> = stmt.query_map([], |row| {
+                    let mut row_data = Vec::with_capacity(column_count);
+                    for i in 0..column_count {
+                        let value: Option<rusqlite::types::Value> = row.get(i)?;
+                        row_data.push(match value {
+                            Some(rusqlite::types::Value::Text(s)) => Some(s.into_bytes()),
+                            Some(rusqlite::types::Value::Integer(i)) => Some(i.to_string().into_bytes()),
+                            Some(rusqlite::types::Value::Real(f)) => Some(f.to_string().into_bytes()),
+                            Some(rusqlite::types::Value::Blob(b)) => Some(b),
+                            Some(rusqlite::types::Value::Null) | None => None,
+                        });
+                    }
+                    Ok(row_data)
+                })?.collect();
+                Ok(DbResponse { columns, rows: rows?, rows_affected: 0 })
+            }
         }
     }
     
@@ -465,33 +466,32 @@ impl DbHandler {
                     // Process query with fast path optimization
                     let processed_query = process_query(query, conn, &self.schema_cache)?;
                     
-                    let mut stmt = conn.prepare(&processed_query)?;
-                    let column_count = stmt.column_count();
-                    let mut columns = Vec::with_capacity(column_count);
-                    for i in 0..column_count {
-                        columns.push(stmt.column_name(i)?.to_string());
-                    }
-                    
-                    let rows: Result<Vec<_>, _> = stmt.query_map([], |row| {
-                        let mut row_data = Vec::with_capacity(column_count);
+                    if processed_query.trim_start().to_uppercase().starts_with("SELECT") {
+                        let (columns, rows) = StatementPool::global().query_cached(conn, &processed_query, [])?;
+                        Ok(DbResponse { columns, rows, rows_affected: 0 })
+                    } else {
+                        let mut stmt = conn.prepare(&processed_query)?;
+                        let column_count = stmt.column_count();
+                        let mut columns = Vec::with_capacity(column_count);
                         for i in 0..column_count {
-                            let value: Option<rusqlite::types::Value> = row.get(i)?;
-                            row_data.push(match value {
-                                Some(rusqlite::types::Value::Text(s)) => Some(s.into_bytes()),
-                                Some(rusqlite::types::Value::Integer(i)) => Some(i.to_string().into_bytes()),
-                                Some(rusqlite::types::Value::Real(f)) => Some(f.to_string().into_bytes()),
-                                Some(rusqlite::types::Value::Blob(b)) => Some(b),
-                                Some(rusqlite::types::Value::Null) | None => None,
-                            });
+                            columns.push(stmt.column_name(i)?.to_string());
                         }
-                        Ok(row_data)
-                    })?.collect();
-                    
-                    Ok(DbResponse {
-                        columns,
-                        rows: rows?,
-                        rows_affected: 0,
-                    })
+                        let rows: Result<Vec<_>, _> = stmt.query_map([], |row| {
+                            let mut row_data = Vec::with_capacity(column_count);
+                            for i in 0..column_count {
+                                let value: Option<rusqlite::types::Value> = row.get(i)?;
+                                row_data.push(match value {
+                                    Some(rusqlite::types::Value::Text(s)) => Some(s.into_bytes()),
+                                    Some(rusqlite::types::Value::Integer(i)) => Some(i.to_string().into_bytes()),
+                                    Some(rusqlite::types::Value::Real(f)) => Some(f.to_string().into_bytes()),
+                                    Some(rusqlite::types::Value::Blob(b)) => Some(b),
+                                    Some(rusqlite::types::Value::Null) | None => None,
+                                });
+                            }
+                            Ok(row_data)
+                        })?.collect();
+                        Ok(DbResponse { columns, rows: rows?, rows_affected: 0 })
+                    }
                 })
             }
             None => {
@@ -543,33 +543,32 @@ impl DbHandler {
             // Process query with fast path optimization
             let processed_query = process_query(query, conn, &self.schema_cache)?;
             
-            let mut stmt = conn.prepare(&processed_query)?;
-            let column_count = stmt.column_count();
-            let mut columns = Vec::with_capacity(column_count);
-            for i in 0..column_count {
-                columns.push(stmt.column_name(i)?.to_string());
-            }
-            
-            let rows: Result<Vec<_>, _> = stmt.query_map([], |row| {
-                let mut row_data = Vec::with_capacity(column_count);
+            if processed_query.trim_start().to_uppercase().starts_with("SELECT") {
+                let (columns, rows) = StatementPool::global().query_cached(conn, &processed_query, [])?;
+                Ok(DbResponse { columns, rows, rows_affected: 0 })
+            } else {
+                let mut stmt = conn.prepare(&processed_query)?;
+                let column_count = stmt.column_count();
+                let mut columns = Vec::with_capacity(column_count);
                 for i in 0..column_count {
-                    let value: Option<rusqlite::types::Value> = row.get(i)?;
-                    row_data.push(match value {
-                        Some(rusqlite::types::Value::Text(s)) => Some(s.into_bytes()),
-                        Some(rusqlite::types::Value::Integer(i)) => Some(i.to_string().into_bytes()),
-                        Some(rusqlite::types::Value::Real(f)) => Some(f.to_string().into_bytes()),
-                        Some(rusqlite::types::Value::Blob(b)) => Some(b),
-                        Some(rusqlite::types::Value::Null) | None => None,
-                    });
+                    columns.push(stmt.column_name(i)?.to_string());
                 }
-                Ok(row_data)
-            })?.collect();
-            
-            Ok(DbResponse {
-                columns,
-                rows: rows?,
-                rows_affected: 0,
-            })
+                let rows: Result<Vec<_>, _> = stmt.query_map([], |row| {
+                    let mut row_data = Vec::with_capacity(column_count);
+                    for i in 0..column_count {
+                        let value: Option<rusqlite::types::Value> = row.get(i)?;
+                        row_data.push(match value {
+                            Some(rusqlite::types::Value::Text(s)) => Some(s.into_bytes()),
+                            Some(rusqlite::types::Value::Integer(i)) => Some(i.to_string().into_bytes()),
+                            Some(rusqlite::types::Value::Real(f)) => Some(f.to_string().into_bytes()),
+                            Some(rusqlite::types::Value::Blob(b)) => Some(b),
+                            Some(rusqlite::types::Value::Null) | None => None,
+                        });
+                    }
+                    Ok(row_data)
+                })?.collect();
+                Ok(DbResponse { columns, rows: rows?, rows_affected: 0 })
+            }
         })
     }
     
