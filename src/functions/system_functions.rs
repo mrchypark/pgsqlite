@@ -17,7 +17,40 @@ pub fn register_system_functions(conn: &Connection) -> Result<()> {
                 env!("CARGO_PKG_VERSION")))
         },
     )?;
-    
+
+    // pg_size_pretty(bytes) - Pretty print size values
+    conn.create_scalar_function(
+        "pg_size_pretty",
+        1,
+        FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
+        |ctx| {
+            let mut bytes: i64 = match ctx.get::<i64>(0) {
+                Ok(v) => v,
+                Err(_) => {
+                    // Try parsing from text
+                    let s: String = ctx.get(0)?;
+                    s.parse::<i64>().unwrap_or(0)
+                }
+            };
+            if bytes < 0 { bytes = 0; }
+            let units = ["bytes", "kB", "MB", "GB", "TB", "PB", "EB"];
+            let mut size = bytes as f64;
+            let mut idx = 0usize;
+            while size >= 1024.0 && idx < units.len()-1 {
+                size /= 1024.0;
+                idx += 1;
+            }
+            let formatted = if idx == 0 {
+                format!("{} {}", bytes, units[idx])
+            } else if size < 10.0 {
+                format!("{:.1} {}", size, units[idx])
+            } else {
+                format!("{:.0} {}", size, units[idx])
+            };
+            Ok(formatted)
+        },
+    )?;
+
     // current_database() - Returns the current database name
     conn.create_scalar_function(
         "current_database",

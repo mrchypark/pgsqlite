@@ -18,6 +18,7 @@ lazy_static! {
         register_v9_fts_support(&mut registry);
         register_v10_typcategory_support(&mut registry);
         register_v11_fix_catalog_views(&mut registry);
+        register_v12_pg_stats_minimal(&mut registry);
         
         registry
     };
@@ -1293,6 +1294,175 @@ fn register_v10_typcategory_support(registry: &mut BTreeMap<u32, Migration>) {
             WHERE key = 'schema_version';
         "#)),
         dependencies: vec![9],
+    });
+}
+
+/// Version 12: Minimal pg_stat and related catalog views
+fn register_v12_pg_stats_minimal(registry: &mut BTreeMap<u32, Migration>) {
+    registry.insert(12, Migration {
+        version: 12,
+        name: "pg_stats_minimal",
+        description: "Add minimal pg_stat* views, pg_database, and pg_foreign_data_wrapper",
+        up: MigrationAction::SqlBatch(&[
+            // pg_database view (single logical DB)
+            r#"
+            CREATE VIEW IF NOT EXISTS pg_database AS
+            SELECT 
+                1            AS oid,
+                'main'       AS datname,
+                10           AS datdba,
+                6            AS encoding,         -- UTF8
+                'C'          AS datcollate,
+                'C'          AS datctype,
+                1            AS datallowconn,
+                0            AS datistemplate,
+                -1           AS datconnlimit,
+                0            AS dattablespace,
+                NULL         AS datacl,
+                0            AS datfrozenxid,
+                0            AS datminmxid;
+            "#,
+            // pg_stat_database view (zeros, derived from pg_database)
+            r#"
+            CREATE VIEW IF NOT EXISTS pg_stat_database AS
+            SELECT 
+                d.oid          AS datid,
+                d.datname      AS datname,
+                0 AS numbackends,
+                0 AS xact_commit,
+                0 AS xact_rollback,
+                0 AS blks_read,
+                0 AS blks_hit,
+                0 AS tup_returned,
+                0 AS tup_fetched,
+                0 AS tup_inserted,
+                0 AS tup_updated,
+                0 AS tup_deleted,
+                0 AS conflicts,
+                0 AS temp_files,
+                0 AS temp_bytes,
+                0 AS deadlocks,
+                0 AS checksum_failures,
+                NULL AS checksum_last_failure,
+                0 AS blk_read_time,
+                0 AS blk_write_time,
+                datetime('now') AS stats_reset
+            FROM pg_database d;
+            "#,
+            // pg_stat_activity view (single row approximation)
+            r#"
+            CREATE VIEW IF NOT EXISTS pg_stat_activity AS
+            SELECT
+                1                 AS datid,
+                'main'            AS datname,
+                pg_backend_pid()  AS pid,
+                10                AS usesysid,
+                'postgres'        AS usename,
+                'pgsqlite'        AS application_name,
+                inet_client_addr() AS client_addr,
+                inet_client_port() AS client_port,
+                datetime('now')   AS backend_start,
+                NULL              AS xact_start,
+                NULL              AS query_start,
+                datetime('now')   AS state_change,
+                NULL              AS wait_event_type,
+                NULL              AS wait_event,
+                'active'          AS state,
+                NULL              AS backend_xid,
+                NULL              AS backend_xmin,
+                NULL              AS query,
+                'client backend'  AS backend_type;
+            "#,
+            // pg_stat_user_tables (list user tables with zeroed stats)
+            r#"
+            CREATE VIEW IF NOT EXISTS pg_stat_user_tables AS
+            SELECT 
+                CAST( (
+                    (unicode(substr(m.name, 1, 1)) * 1000000) +
+                    (unicode(substr(m.name || ' ', 2, 1)) * 10000) +
+                    (unicode(substr(m.name || '  ', 3, 1)) * 100) +
+                    (length(m.name) * 7)
+                ) % 1000000 + 16384 AS TEXT) AS relid,
+                'public' AS schemaname,
+                m.name   AS relname,
+                0 AS seq_scan,
+                0 AS seq_tup_read,
+                0 AS idx_scan,
+                0 AS idx_tup_fetch,
+                0 AS n_tup_ins,
+                0 AS n_tup_upd,
+                0 AS n_tup_del,
+                0 AS n_tup_hot_upd,
+                0 AS n_live_tup,
+                0 AS n_dead_tup,
+                NULL AS vacuum_count,
+                NULL AS autovacuum_count,
+                NULL AS analyze_count,
+                NULL AS autoanalyze_count,
+                NULL AS last_vacuum,
+                NULL AS last_autovacuum,
+                NULL AS last_analyze,
+                NULL AS last_autoanalyze
+            FROM sqlite_master m
+            WHERE m.type = 'table'
+              AND m.name NOT LIKE 'sqlite_%'
+              AND m.name NOT LIKE '__pgsqlite_%';
+            "#,
+            // pg_statio_user_tables (zero IO stats per table)
+            r#"
+            CREATE VIEW IF NOT EXISTS pg_statio_user_tables AS
+            SELECT 
+                'public' AS schemaname,
+                m.name   AS relname,
+                0 AS heap_blks_read,
+                0 AS heap_blks_hit,
+                0 AS idx_blks_read,
+                0 AS idx_blks_hit,
+                0 AS toast_blks_read,
+                0 AS toast_blks_hit,
+                0 AS tidx_blks_read,
+                0 AS tidx_blks_hit
+            FROM sqlite_master m
+            WHERE m.type = 'table'
+              AND m.name NOT LIKE 'sqlite_%'
+              AND m.name NOT LIKE '__pgsqlite_%';
+            "#,
+            // pg_foreign_data_wrapper (minimal row for compatibility)
+            r#"
+            CREATE VIEW IF NOT EXISTS pg_foreign_data_wrapper AS
+            SELECT 
+                1           AS oid,
+                'sqlite_fdw' AS fdwname,
+                10          AS fdwowner,
+                0           AS fdwhandler,
+                0           AS fdwvalidator,
+                NULL        AS fdwacl,
+                NULL        AS fdwoptions
+            UNION ALL
+            SELECT 
+                2, 'postgres_fdw', 10, 0, 0, NULL, NULL;
+            "#,
+            // Update schema version
+            r#"
+            UPDATE __pgsqlite_metadata 
+            SET value = '12', updated_at = strftime('%s', 'now')
+            WHERE key = 'schema_version';
+            "#,
+        ]),
+        down: Some(MigrationAction::SqlBatch(&[
+            "DROP VIEW IF EXISTS pg_stat_database;",
+            "DROP VIEW IF EXISTS pg_stat_activity;",
+            "DROP VIEW IF EXISTS pg_stat_user_tables;",
+            "DROP VIEW IF EXISTS pg_statio_user_tables;",
+            "DROP VIEW IF EXISTS pg_foreign_data_wrapper;",
+            "DROP VIEW IF EXISTS pg_database;",
+            r#"
+            UPDATE __pgsqlite_metadata 
+            SET value = '11', updated_at = strftime('%s', 'now')
+            WHERE key = 'schema_version';
+            "#,
+        ])),
+        dependencies: vec![11],
     });
 }
 

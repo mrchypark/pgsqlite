@@ -16,7 +16,11 @@ impl SchemaPrefixTranslator {
         let catalog_tables = [
             "pg_class", "pg_namespace", "pg_attribute", "pg_type", 
             "pg_constraint", "pg_index", "pg_attrdef", "pg_am",
-            "pg_enum", "pg_range"
+            "pg_enum", "pg_range",
+            // Newly supported minimal views
+            "pg_database", "pg_stat_database", "pg_stat_activity",
+            "pg_stat_user_tables", "pg_statio_user_tables",
+            "pg_foreign_data_wrapper"
         ];
         
         for table in &catalog_tables {
@@ -33,6 +37,10 @@ impl SchemaPrefixTranslator {
             "current_database", "current_schema", "current_user", "session_user",
             "pg_backend_pid", "pg_is_in_recovery", "current_schemas"
         ];
+
+        // Also normalize pg_size_pretty
+        result = result.replace("pg_catalog.pg_size_pretty", "pg_size_pretty");
+        result = result.replace("PG_CATALOG.PG_SIZE_PRETTY", "pg_size_pretty");
         
         for func in &catalog_functions {
             result = result.replace(&format!("pg_catalog.{func}"), func);
