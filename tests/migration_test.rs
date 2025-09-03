@@ -23,7 +23,9 @@ fn test_fresh_database_migration() {
     
     // Should apply all migrations
     assert_eq!(applied.len(), MIGRATIONS.len());
-    assert_eq!(applied, vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+    let mut expected_versions: Vec<u32> = MIGRATIONS.keys().cloned().collect();
+    expected_versions.sort_unstable();
+    assert_eq!(applied, expected_versions);
     
     // Verify schema version
     let conn = runner.into_connection();
@@ -32,7 +34,8 @@ fn test_fresh_database_migration() {
         [],
         |row| row.get(0)
     ).unwrap();
-    assert_eq!(version, "11");
+    let latest_version = *MIGRATIONS.keys().max().unwrap();
+    assert_eq!(version, latest_version.to_string());
     
     // Now check should pass
     let runner2 = MigrationRunner::new(conn);
@@ -67,7 +70,7 @@ fn test_idempotent_migrations() {
     let conn = Connection::open(&db_path).unwrap();
     let mut runner = MigrationRunner::new(conn);
     let applied = runner.run_pending_migrations().unwrap();
-    assert_eq!(applied.len(), 11);
+    assert_eq!(applied.len(), MIGRATIONS.len());
     drop(runner);
     
     // Second run - should apply nothing
@@ -108,18 +111,11 @@ fn test_existing_schema_detection() {
     let mut runner = MigrationRunner::new(conn);
     let applied = runner.run_pending_migrations().unwrap();
     
-    // Should recognize existing schema as version 1 and only apply version 2, 3, 4, 5, 6, 7, 8, 9, 10, and 11
-    assert_eq!(applied.len(), 10);
-    assert_eq!(applied[0], 2);
-    assert_eq!(applied[1], 3);
-    assert_eq!(applied[2], 4);
-    assert_eq!(applied[3], 5);
-    assert_eq!(applied[4], 6);
-    assert_eq!(applied[5], 7);
-    assert_eq!(applied[6], 8);
-    assert_eq!(applied[7], 9);
-    assert_eq!(applied[8], 10);
-    assert_eq!(applied[9], 11);
+    // Should recognize existing schema as version 1 and only apply remaining versions (2..latest)
+    let latest_version = *MIGRATIONS.keys().max().unwrap();
+    assert_eq!(applied.len(), MIGRATIONS.len() - 1);
+    assert_eq!(applied.first().copied(), Some(2));
+    assert_eq!(applied.last().copied(), Some(latest_version));
     
     // Verify final version
     let conn = runner.into_connection();
@@ -128,7 +124,7 @@ fn test_existing_schema_detection() {
         [],
         |row| row.get(0)
     ).unwrap();
-    assert_eq!(version, "11");
+    assert_eq!(version, latest_version.to_string());
     
     // Now check should pass
     let runner2 = MigrationRunner::new(conn);
@@ -153,18 +149,17 @@ fn test_migration_history() {
     .unwrap()
     .collect::<Result<Vec<_>, _>>().unwrap();
     
-    assert_eq!(migrations.len(), 11);
-    assert_eq!(migrations[0], (1, "initial_schema".to_string(), "completed".to_string()));
-    assert_eq!(migrations[1], (2, "enum_type_support".to_string(), "completed".to_string()));
-    assert_eq!(migrations[2], (3, "datetime_timezone_support".to_string(), "completed".to_string()));
-    assert_eq!(migrations[3], (4, "datetime_integer_storage".to_string(), "completed".to_string()));
-    assert_eq!(migrations[4], (5, "pg_catalog_tables".to_string(), "completed".to_string()));
-    assert_eq!(migrations[5], (6, "varchar_constraints".to_string(), "completed".to_string()));
-    assert_eq!(migrations[6], (7, "numeric_constraints".to_string(), "completed".to_string()));
-    assert_eq!(migrations[7], (8, "array_support".to_string(), "completed".to_string()));
-    assert_eq!(migrations[8], (9, "fts_support".to_string(), "completed".to_string()));
-    assert_eq!(migrations[9], (10, "typcategory_support".to_string(), "completed".to_string()));
-    assert_eq!(migrations[10], (11, "fix_catalog_views".to_string(), "completed".to_string()));
+    assert_eq!(migrations.len(), MIGRATIONS.len());
+    // Compare to registry for versions and names
+    let mut expected: Vec<(i32, String)> = MIGRATIONS
+        .iter()
+        .map(|(v, m)| (*v as i32, m.name.to_string()))
+        .collect();
+    expected.sort_by_key(|(v, _)| *v);
+    for (i, (ver, name, status)) in migrations.iter().enumerate() {
+        assert_eq!((*ver, name.clone()), expected[i]);
+        assert_eq!(status, "completed");
+    }
 }
 
 #[test] 
