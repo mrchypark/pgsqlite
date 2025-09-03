@@ -1,6 +1,6 @@
 [package]
 name = "pgsqlite"
-version = "0.0.15"
+version = "0.0.16"
 edition = "2024"
 
 [features]
@@ -18,7 +18,15 @@ bytes = "1.9.0"
 postgres-protocol = "0.6.8"
 
 # SQLite
-rusqlite = { version = "0.36.0", features = ["bundled", "uuid", "serde_json", "functions", "collation", "vtab", "column_decltype"] }
+rusqlite = { version = "0.36.0", features = [
+  "bundled",
+  "uuid",
+  "serde_json",
+  "functions",
+  "collation",
+  "vtab",
+  "column_decltype",
+] }
 
 # SQL parsing
 sqlparser = "0.57.0"
