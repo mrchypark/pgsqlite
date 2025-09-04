@@ -321,6 +321,11 @@ impl CatalogInterceptor {
             if table_name.contains("information_schema.tables") {
                 return Some(Self::handle_information_schema_tables_query(select, &db).await);
             }
+
+            // Handle information_schema.schemata queries
+            if table_name.contains("information_schema.schemata") {
+                return Some(Self::handle_information_schema_schemata_query(select));
+            }
         }
         None
     }
@@ -1141,6 +1146,82 @@ impl CatalogInterceptor {
             columns: selected_columns,
             rows,
             rows_affected: rows_count,
+        }
+    }
+
+    fn handle_information_schema_schemata_query(select: &Select) -> DbResponse {
+        debug!("Handling information_schema.schemata query");
+        
+        // Define columns for information_schema.schemata
+        let all_columns = vec![
+            "catalog_name".to_string(),
+            "schema_name".to_string(),
+            "schema_owner".to_string(),
+            "default_character_set_catalog".to_string(),
+            "default_character_set_schema".to_string(),
+            "default_character_set_name".to_string(),
+            "sql_path".to_string(),
+        ];
+        
+        // Determine selected columns per projection
+        let (selected_columns, column_indices) = if select.projection.len() == 1 {
+            if let SelectItem::Wildcard(_) = &select.projection[0] {
+                (all_columns.clone(), (0..all_columns.len()).collect::<Vec<_>>())
+            } else {
+                let mut cols = Vec::new();
+                let mut indices = Vec::new();
+                for item in &select.projection {
+                    if let SelectItem::UnnamedExpr(Expr::Identifier(ident)) = item {
+                        let col_name = ident.value.to_string();
+                        if let Some(idx) = all_columns.iter().position(|c| c == &col_name) {
+                            cols.push(col_name);
+                            indices.push(idx);
+                        }
+                    }
+                }
+                (cols, indices)
+            }
+        } else {
+            let mut cols = Vec::new();
+            let mut indices = Vec::new();
+            for item in &select.projection {
+                if let SelectItem::UnnamedExpr(Expr::Identifier(ident)) = item {
+                    let col_name = ident.value.to_string();
+                    if let Some(idx) = all_columns.iter().position(|c| c == &col_name) {
+                        cols.push(col_name);
+                        indices.push(idx);
+                    }
+                }
+            }
+            (cols, indices)
+        };
+        
+        // Minimal schemas: public, pg_catalog (optionally information_schema)
+        let schemas = vec![
+            ("main", "public", "postgres"),
+            ("main", "pg_catalog", "postgres"),
+        ];
+        
+        let mut rows = Vec::new();
+        for (catalog, schema, owner) in schemas {
+            let full_row: Vec<Option<Vec<u8>>> = vec![
+                Some(catalog.as_bytes().to_vec()),           // catalog_name
+                Some(schema.as_bytes().to_vec()),            // schema_name
+                Some(owner.as_bytes().to_vec()),             // schema_owner
+                None, None, None,                            // default_character_set_*
+                None,                                        // sql_path
+            ];
+            let projected_row: Vec<Option<Vec<u8>>> = column_indices.iter()
+                .map(|&idx| full_row[idx].clone())
+                .collect();
+            rows.push(projected_row);
+        }
+        
+        let rows_affected = rows.len();
+        DbResponse {
+            columns: selected_columns,
+            rows,
+            rows_affected,
         }
     }
 }
