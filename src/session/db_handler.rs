@@ -267,7 +267,8 @@ impl DbHandler {
         debug!("execute_with_params called with query: {}", query);
         debug!("execute_with_params params count: {}", params.len());
         // Compatibility: CREATE DATABASE is not supported by SQLite. Treat as success.
-        if query.to_lowercase().trim_start().starts_with("create database ") {
+        let lq = query.to_lowercase();
+        if lq.trim_start().starts_with("create database ") || lq.trim_start().starts_with("drop database ") {
             return Ok(DbResponse { columns: vec![], rows: vec![], rows_affected: 0 });
         }
         let result = self.connection_manager.execute_with_session(session_id, |conn| {
@@ -462,7 +463,7 @@ impl DbHandler {
 
         // Compatibility: CREATE DATABASE is not supported by SQLite.
         // Treat as a no-op success to satisfy frameworks that pre-create DBs.
-        if lower_query.trim_start().starts_with("create database ") {
+        if lower_query.trim_start().starts_with("create database ") || lower_query.trim_start().starts_with("drop database ") {
             return Ok(DbResponse { columns: vec![], rows: vec![], rows_affected: 0 });
         }
 
@@ -547,7 +548,7 @@ impl DbHandler {
         let lower_query = query.to_lowercase();
 
         // Compatibility: CREATE DATABASE is not supported by SQLite. No-op.
-        if lower_query.trim_start().starts_with("create database ") {
+        if lower_query.trim_start().starts_with("create database ") || lower_query.trim_start().starts_with("drop database ") {
             return Ok(DbResponse { columns: vec![], rows: vec![], rows_affected: 0 });
         }
 
