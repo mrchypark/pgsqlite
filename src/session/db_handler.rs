@@ -622,6 +622,10 @@ impl DbHandler {
         // For compatibility with tests, use shared connection if available
         // Check if it's any form of memory database (including named shared memory)
         debug!("DbHandler::execute - db_path: {}, query: {}", self.db_path, query);
+        // Compatibility: CREATE/DROP DATABASE -> no-op
+        if query.to_lowercase().trim_start().starts_with("create database ") || query.to_lowercase().trim_start().starts_with("drop database ") {
+            return Ok(DbResponse { columns: vec![], rows: vec![], rows_affected: 0 });
+        }
         if self.db_path == ":memory:" || self.db_path.contains("mode=memory") {
             // For memory databases, we need to use a session connection
             // Create a temporary session for backward compatibility
@@ -669,6 +673,11 @@ impl DbHandler {
         session_id: &Uuid,
         cached_conn: Option<&Arc<parking_lot::Mutex<rusqlite::Connection>>>
     ) -> Result<DbResponse, PgSqliteError> {
+        // Compatibility: handle unsupported CREATE/DROP DATABASE as no-op
+        let lq = query.to_lowercase();
+        if lq.trim_start().starts_with("create database ") || lq.trim_start().starts_with("drop database ") {
+            return Ok(DbResponse { columns: vec![], rows: vec![], rows_affected: 0 });
+        }
         match cached_conn {
             Some(conn) => {
                 self.connection_manager.execute_with_cached_connection(conn, |conn| {
@@ -692,6 +701,11 @@ impl DbHandler {
     
     /// Execute with session-specific connection
     pub async fn execute_with_session(&self, query: &str, session_id: &Uuid) -> Result<DbResponse, PgSqliteError> {
+        // Compatibility: handle unsupported CREATE/DROP DATABASE as no-op
+        let lq = query.to_lowercase();
+        if lq.trim_start().starts_with("create database ") || lq.trim_start().starts_with("drop database ") {
+            return Ok(DbResponse { columns: vec![], rows: vec![], rows_affected: 0 });
+        }
         self.connection_manager.execute_with_session(session_id, |conn| {
             // Process query with fast path optimization
             let processed_query = process_query(query, conn, &self.schema_cache)?;
