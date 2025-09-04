@@ -1,5 +1,7 @@
 use rusqlite::{Connection, Result, functions::FunctionFlags};
 use tracing::debug;
+use std::path::Path;
+use crate::config::CONFIG;
 
 /// Register PostgreSQL system information functions
 pub fn register_system_functions(conn: &Connection) -> Result<()> {
@@ -122,7 +124,7 @@ pub fn register_system_functions(conn: &Connection) -> Result<()> {
             Ok(std::process::id() as i32)
         },
     )?;
-    
+
     // pg_is_in_recovery() - Returns whether server is in recovery mode
     conn.create_scalar_function(
         "pg_is_in_recovery",
@@ -133,7 +135,27 @@ pub fn register_system_functions(conn: &Connection) -> Result<()> {
             Ok(0i32) // false in SQLite boolean representation
         },
     )?;
-    
+
+    // pgsqlite_datname() - Returns logical database name (filename basename)
+    conn.create_scalar_function(
+        "pgsqlite_datname",
+        0,
+        FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
+        |_ctx| {
+            let db_path = &CONFIG.database;
+            if db_path == ":memory:" || CONFIG.in_memory {
+                return Ok("memory".to_string());
+            }
+            let p = Path::new(db_path);
+            // Prefer stem (without extension); fallback to file_name; then to full path string
+            let name = p.file_stem()
+                .and_then(|s| s.to_str())
+                .or_else(|| p.file_name().and_then(|s| s.to_str()))
+                .unwrap_or(db_path);
+            Ok(name.to_string())
+        },
+    )?;
+
     // pg_database_size(name) - Returns database size in bytes
     conn.create_scalar_function(
         "pg_database_size",

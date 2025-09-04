@@ -19,9 +19,73 @@ lazy_static! {
         register_v10_typcategory_support(&mut registry);
         register_v11_fix_catalog_views(&mut registry);
         register_v12_pg_stats_minimal(&mut registry);
+        register_v13_pg_database_datname_filename(&mut registry);
         
         registry
     };
+}
+
+/// Version 13: Make pg_database.datname reflect filename (via function)
+fn register_v13_pg_database_datname_filename(registry: &mut BTreeMap<u32, Migration>) {
+    registry.insert(13, Migration {
+        version: 13,
+        name: "pg_database_datname_filename",
+        description: "pg_database.datname shows database filename",
+        up: MigrationAction::SqlBatch(&[
+            // Recreate pg_database using pgsqlite_datname()
+            r#"
+            DROP VIEW IF EXISTS pg_database;
+            CREATE VIEW pg_database AS
+            SELECT 
+                1            AS oid,
+                pgsqlite_datname() AS datname,
+                10           AS datdba,
+                6            AS encoding,
+                'C'          AS datcollate,
+                'C'          AS datctype,
+                1            AS datallowconn,
+                0            AS datistemplate,
+                -1           AS datconnlimit,
+                0            AS dattablespace,
+                NULL         AS datacl,
+                0            AS datfrozenxid,
+                0            AS datminmxid;
+            "#,
+            // Update schema version
+            r#"
+            UPDATE __pgsqlite_metadata 
+            SET value = '13', updated_at = strftime('%s', 'now')
+            WHERE key = 'schema_version';
+            "#,
+        ]),
+        down: Some(MigrationAction::SqlBatch(&[
+            // Restore previous view (datname='main')
+            r#"
+            DROP VIEW IF EXISTS pg_database;
+            CREATE VIEW pg_database AS
+            SELECT 
+                1            AS oid,
+                'main'       AS datname,
+                10           AS datdba,
+                6            AS encoding,
+                'C'          AS datcollate,
+                'C'          AS datctype,
+                1            AS datallowconn,
+                0            AS datistemplate,
+                -1           AS datconnlimit,
+                0            AS dattablespace,
+                NULL         AS datacl,
+                0            AS datfrozenxid,
+                0            AS datminmxid;
+            "#,
+            r#"
+            UPDATE __pgsqlite_metadata 
+            SET value = '12', updated_at = strftime('%s', 'now')
+            WHERE key = 'schema_version';
+            "#,
+        ])),
+        dependencies: vec![12],
+    });
 }
 
 /// Version 1: Initial schema
