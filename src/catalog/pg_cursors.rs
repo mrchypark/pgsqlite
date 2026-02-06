@@ -1,8 +1,8 @@
+use super::utils::format_timestamptz;
 use super::where_evaluator::WhereEvaluator;
 use crate::PgSqliteError;
 use crate::session::SessionState;
 use crate::session::db_handler::{DbHandler, DbResponse};
-use chrono::{DateTime, Utc};
 use sqlparser::ast::{Expr, Select, SelectItem};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -112,17 +112,10 @@ impl PgCursorsHandler {
             let mut row = HashMap::new();
             row.insert("name".to_string(), name.as_bytes().to_vec());
             row.insert("statement".to_string(), portal.query.as_bytes().to_vec());
+            let meta = portal_meta.get(name);
             row.insert(
                 "is_holdable".to_string(),
-                portal_meta
-                    .get(name)
-                    .map(|meta| {
-                        if meta.is_holdable {
-                            b"t".to_vec()
-                        } else {
-                            b"f".to_vec()
-                        }
-                    })
+                meta.map(|m| if m.is_holdable { b"t".to_vec() } else { b"f".to_vec() })
                     .unwrap_or_else(|| b"f".to_vec()),
             );
             row.insert(
@@ -135,22 +128,12 @@ impl PgCursorsHandler {
             );
             row.insert(
                 "is_scrollable".to_string(),
-                portal_meta
-                    .get(name)
-                    .map(|meta| {
-                        if meta.is_scrollable {
-                            b"t".to_vec()
-                        } else {
-                            b"f".to_vec()
-                        }
-                    })
+                meta.map(|m| if m.is_scrollable { b"t".to_vec() } else { b"f".to_vec() })
                     .unwrap_or_else(|| b"f".to_vec()),
             );
             row.insert(
                 "creation_time".to_string(),
-                portal_meta
-                    .get(name)
-                    .map(|meta| Self::format_timestamptz(meta.created_at))
+                meta.map(|m| format_timestamptz(m.created_at))
                     .unwrap_or_else(|| "1970-01-01 00:00:00+00".to_string())
                     .into_bytes(),
             );
@@ -163,11 +146,6 @@ impl PgCursorsHandler {
                 .cmp(b.get("name").unwrap_or(&Vec::new()))
         });
         rows
-    }
-
-    fn format_timestamptz(ts: std::time::SystemTime) -> String {
-        let dt: DateTime<Utc> = ts.into();
-        dt.format("%Y-%m-%d %H:%M:%S%.6f+00").to_string()
     }
 
     fn apply_where_filter(

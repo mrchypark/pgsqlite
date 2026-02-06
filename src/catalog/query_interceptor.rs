@@ -752,7 +752,7 @@ impl CatalogInterceptor {
             // Handle pg_roles queries
             if table_name.contains("pg_roles") || table_name.contains("pg_catalog.pg_roles") {
                 info!("Routing to PgRolesHandler for table: {}", table_name);
-                return match PgRolesHandler::handle_query(select, &db, session.as_ref()).await {
+                return match PgRolesHandler::handle_query(select, &db).await {
                     Ok(response) => {
                         debug!("PgRolesHandler returned {} rows", response.rows.len());
                         Some(Ok(response))
@@ -766,7 +766,7 @@ impl CatalogInterceptor {
             // Handle pg_user queries
             if table_name.contains("pg_user") || table_name.contains("pg_catalog.pg_user") {
                 info!("Routing to PgUserHandler for table: {}", table_name);
-                return match PgUserHandler::handle_query(select, &db, session.as_ref()).await {
+                return match PgUserHandler::handle_query(select, &db).await {
                     Ok(response) => {
                         debug!("PgUserHandler returned {} rows", response.rows.len());
                         Some(Ok(response))
