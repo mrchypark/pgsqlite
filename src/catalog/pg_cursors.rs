@@ -1,9 +1,11 @@
-use crate::session::db_handler::{DbHandler, DbResponse};
-use crate::PgSqliteError;
-use sqlparser::ast::{Select, SelectItem, Expr};
-use tracing::debug;
-use std::collections::HashMap;
 use super::where_evaluator::WhereEvaluator;
+use crate::PgSqliteError;
+use crate::session::SessionState;
+use crate::session::db_handler::{DbHandler, DbResponse};
+use sqlparser::ast::{Expr, Select, SelectItem};
+use std::collections::HashMap;
+use std::sync::Arc;
+use tracing::debug;
 
 /// Handler for pg_cursors view - shows open cursors
 pub struct PgCursorsHandler;
@@ -12,6 +14,7 @@ impl PgCursorsHandler {
     pub async fn handle_query(
         select: &Select,
         _db: &DbHandler,
+        session: Option<Arc<SessionState>>,
     ) -> Result<DbResponse, PgSqliteError> {
         debug!("Handling pg_cursors query");
 
@@ -21,15 +24,14 @@ impl PgCursorsHandler {
             "statement".to_string(),
             "is_holdable".to_string(),
             "is_binary".to_string(),
-            "cursor_scope".to_string(),
-            "status".to_string(),
+            "is_scrollable".to_string(),
             "creation_time".to_string(),
         ];
 
         let selected_columns = Self::get_selected_columns(&select.projection, &all_columns);
 
         // Get cursor information (empty - would need session state tracking)
-        let cursors = Self::get_cursors();
+        let cursors = Self::get_cursors(session).await;
 
         // Apply WHERE clause filtering if present
         let filtered_cursors = if let Some(where_clause) = &select.selection {
@@ -72,7 +74,10 @@ impl PgCursorsHandler {
                         selected.push(col_name);
                     }
                 }
-                SelectItem::ExprWithAlias { expr: Expr::Identifier(ident), alias } => {
+                SelectItem::ExprWithAlias {
+                    expr: Expr::Identifier(ident),
+                    alias,
+                } => {
                     let col_name = ident.value.to_lowercase();
                     if all_columns.contains(&col_name) {
                         selected.push(alias.value.clone());
@@ -89,10 +94,45 @@ impl PgCursorsHandler {
         selected
     }
 
-    fn get_cursors() -> Vec<HashMap<String, Vec<u8>>> {
-        // Return empty - in a full implementation, this would track
-        // open cursors from the session state
-        vec![]
+    async fn get_cursors(session: Option<Arc<SessionState>>) -> Vec<HashMap<String, Vec<u8>>> {
+        let Some(session) = session else {
+            return vec![];
+        };
+
+        let portals = session.portals.read().await;
+        let mut rows = Vec::new();
+        for (name, portal) in portals.iter() {
+            // Hide unnamed portals from catalog probes.
+            if name.is_empty() {
+                continue;
+            }
+
+            let mut row = HashMap::new();
+            row.insert("name".to_string(), name.as_bytes().to_vec());
+            row.insert("statement".to_string(), portal.query.as_bytes().to_vec());
+            row.insert("is_holdable".to_string(), b"f".to_vec());
+            row.insert(
+                "is_binary".to_string(),
+                if portal.result_formats.contains(&1) {
+                    b"t".to_vec()
+                } else {
+                    b"f".to_vec()
+                },
+            );
+            row.insert("is_scrollable".to_string(), b"f".to_vec());
+            row.insert(
+                "creation_time".to_string(),
+                b"1970-01-01 00:00:00+00".to_vec(),
+            );
+            rows.push(row);
+        }
+
+        rows.sort_by(|a, b| {
+            a.get("name")
+                .unwrap_or(&Vec::new())
+                .cmp(b.get("name").unwrap_or(&Vec::new()))
+        });
+        rows
     }
 
     fn apply_where_filter(

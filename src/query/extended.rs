@@ -38,6 +38,106 @@ fn query_starts_with_ignore_case(query: &str, prefix: &str) -> bool {
     }
 }
 
+#[inline]
+fn query_is_select_like(query: &str) -> bool {
+    query_starts_with_ignore_case(query, "SELECT") || query_starts_with_ignore_case(query, "WITH")
+}
+
+#[inline]
+fn expression_prefers_float8(expression: &str) -> bool {
+    let without_literals = regex::Regex::new(r"'(?:''|[^'])*'")
+        .ok()
+        .map(|re| re.replace_all(expression, "").into_owned())
+        .unwrap_or_else(|| expression.to_string());
+    let sanitized = without_literals.replace("||", "");
+    let expression_upper = sanitized.to_uppercase();
+    if expression_upper.contains("COUNT(") {
+        return false;
+    }
+    if sanitized.trim() == "*" {
+        return false;
+    }
+    if expression_upper.contains("::TEXT")
+        || expression_upper.contains("::VARCHAR")
+        || expression_upper.contains("::CHAR")
+        || expression_upper.contains("::BPCHAR")
+        || expression_upper.contains("::NUMERIC")
+        || expression_upper.contains("::DECIMAL")
+        || expression_upper.contains(" AS TEXT")
+        || expression_upper.contains(" AS VARCHAR")
+        || expression_upper.contains(" AS CHAR")
+        || expression_upper.contains(" AS BPCHAR")
+        || expression_upper.contains(" AS NUMERIC")
+        || expression_upper.contains(" AS DECIMAL")
+    {
+        return false;
+    }
+    if expression_upper.contains("EXTRACT(") && expression_upper.contains("TO_TIMESTAMP(") {
+        return false;
+    }
+    if expression_upper.contains("SUM(")
+        || expression_upper.contains("AVG(")
+        || expression_upper.contains("JULIANDAY(")
+        || expression_upper.contains(" AS REAL")
+        || expression_upper.contains(" AS FLOAT")
+        || expression_upper.contains(" AS DOUBLE")
+    {
+        return true;
+    }
+
+    regex::Regex::new(r"(?x)(^|[^A-Za-z0-9_])[-+]?\d+\.\d+([eE][-+]?\d+)?([^A-Za-z0-9_]|$)")
+        .ok()
+        .is_some_and(|re| re.is_match(&sanitized))
+}
+
+#[inline]
+fn infer_expression_alias_type(query: &str, col_name: &str) -> Option<i32> {
+    let pattern = format!(
+        r"(?is)(?:^|,)\s*([^,]+?)\s+AS\s+{}(?:\s*,|\s+FROM|\s+UNION|\s+WHERE|\s+GROUP|\s+ORDER|\s*\)|\s*$)",
+        regex::escape(col_name)
+    );
+    let re = regex::Regex::new(&pattern).ok()?;
+    let captures = re.captures(query)?;
+    let expression = captures.get(1)?.as_str();
+
+    // Expression aliases with arithmetic or SUM/AVG over expressions should decode as FLOAT8.
+    if expression_prefers_float8(expression) {
+        Some(PgType::Float8.to_oid())
+    } else {
+        // If this alias simply forwards another alias (e.g. `fact AS factorial_value`),
+        // try to infer from that source alias definition in the same query text.
+        let source = expression.trim();
+        if let Ok(ident_re) = regex::Regex::new(r"^[A-Za-z_][A-Za-z0-9_\.]*$")
+            && ident_re.is_match(source)
+        {
+            let source_alias = source.rsplit('.').next().unwrap_or(source);
+            let source_pattern = format!(
+                r"(?is)(?:^|,)\s*([^,]+?)\s+AS\s+{}(?:\s*,|\s+FROM|\s+UNION|\s+WHERE|\s+GROUP|\s+ORDER|\s*\)|\s*$)",
+                regex::escape(source_alias)
+            );
+            if let Ok(source_re) = regex::Regex::new(&source_pattern)
+                && let Some(source_caps) = source_re.captures(query)
+                && let Some(source_expr) = source_caps.get(1).map(|m| m.as_str())
+                && !source_expr.trim().eq_ignore_ascii_case(source_alias)
+                && expression_prefers_float8(source_expr)
+            {
+                return Some(PgType::Float8.to_oid());
+            }
+        }
+        None
+    }
+}
+
+#[inline]
+fn adjust_inferred_type_for_expression_alias(query: &str, col_name: &str, inferred: i32) -> i32 {
+    if inferred == PgType::Int4.to_oid() || inferred == PgType::Int8.to_oid() {
+        if let Some(expr_type) = infer_expression_alias_type(query, col_name) {
+            return expr_type;
+        }
+    }
+    inferred
+}
+
 /// Find position of a keyword in query text (case-insensitive)
 #[inline]
 fn find_keyword_position(query: &str, keyword: &str) -> Option<usize> {
@@ -63,6 +163,54 @@ fn find_keyword_position(query: &str, keyword: &str) -> Option<usize> {
 pub struct ExtendedQueryHandler;
 
 impl ExtendedQueryHandler {
+    fn result_format_for_index(result_formats: &[i16], index: usize) -> i16 {
+        if result_formats.is_empty() {
+            0
+        } else if result_formats.len() == 1 {
+            result_formats[0]
+        } else {
+            result_formats.get(index).copied().unwrap_or(0)
+        }
+    }
+
+    fn should_map_type_oid_to_text_for_wire(type_oid: i32) -> bool {
+        matches!(PgType::from_oid(type_oid), Some(PgType::Money))
+    }
+
+    fn map_type_oid_for_wire(format: i16, type_oid: i32) -> i32 {
+        if format == 0 && Self::should_map_type_oid_to_text_for_wire(type_oid) {
+            PgType::Text.to_oid()
+        } else {
+            type_oid
+        }
+    }
+
+    fn normalize_result_format_for_wire(format: i16, type_oid: i32) -> i16 {
+        if format == 1 && Self::should_map_type_oid_to_text_for_wire(type_oid) {
+            0
+        } else {
+            format
+        }
+    }
+
+    fn map_field_description_types_for_wire(fields: &mut [FieldDescription]) {
+        for field in fields {
+            field.type_oid = Self::map_type_oid_for_wire(field.format, field.type_oid);
+        }
+    }
+
+    fn apply_expression_alias_type_corrections(query: &str, fields: &mut [FieldDescription]) {
+        for field in fields {
+            if let Some(inferred_type) = infer_expression_alias_type(query, &field.name)
+                && (field.type_oid == PgType::Int4.to_oid()
+                    || field.type_oid == PgType::Int8.to_oid()
+                    || field.type_oid == PgType::Text.to_oid())
+            {
+                field.type_oid = inferred_type;
+            }
+        }
+    }
+
     /// Get cached connection or fetch and cache it
     async fn get_or_cache_connection(
         session: &Arc<SessionState>,
@@ -277,7 +425,7 @@ impl ExtendedQueryHandler {
         }
 
         // Check if this is a simple parameter SELECT (e.g., SELECT $1, $2)
-        let is_simple_param_select = query_starts_with_ignore_case(&query, "SELECT")
+        let is_simple_param_select = query_is_select_like(&query)
             && !query.to_uppercase().contains("FROM")
             && query.contains('$');
 
@@ -356,7 +504,7 @@ impl ExtendedQueryHandler {
                                     (types.clone(), Some(types), None, Vec::new())
                                 }
                             }
-                        } else if query_starts_with_ignore_case(&query, "SELECT") {
+                        } else if query_is_select_like(&query) {
                             let types = Self::analyze_select_params(&query, db, session)
                                 .await
                                 .unwrap_or_else(|_| {
@@ -504,6 +652,23 @@ impl ExtendedQueryHandler {
             }
         }
 
+        // Translate unnest() functions to json_each() equivalents
+        #[cfg(not(feature = "unified_processor"))] // Skip when using unified processor
+        {
+            use crate::translator::UnnestTranslator;
+            match UnnestTranslator::translate_with_metadata(&translated_for_analysis) {
+                Ok((translated, metadata)) => {
+                    if translated != translated_for_analysis {
+                        translated_for_analysis = translated;
+                    }
+                    translation_metadata.merge(metadata);
+                }
+                Err(_) => {
+                    // Continue with original query
+                }
+            }
+        }
+
         // Translate json_each()/jsonb_each() functions for PostgreSQL compatibility
         #[cfg(not(feature = "unified_processor"))] // Skip when using unified processor
         {
@@ -572,7 +737,7 @@ impl ExtendedQueryHandler {
         );
         info!("PARSE: Original query: {}", cleaned_query);
         info!("PARSE: Is simple param select: {}", is_simple_param_select);
-        let field_descriptions = if query_starts_with_ignore_case(&cleaned_query, "SELECT") {
+        let field_descriptions = if query_is_select_like(&cleaned_query) {
             // Don't try to get field descriptions if this is a catalog query
             // These queries are handled specially and don't need real field info
             if cleaned_query.contains("pg_catalog")
@@ -887,7 +1052,25 @@ impl ExtendedQueryHandler {
                                     }
                                 }
                                 // Second priority: Check translation metadata for type hints
-                                else if let Some(hint) = translation_metadata.get_hint(col_name) {
+                                else if let Some(oid) =
+                                    crate::types::SchemaTypeMapper::get_aggregate_return_type_with_query(
+                                        &col_name.to_lowercase(),
+                                        None,
+                                        None,
+                                        Some(&cleaned_query),
+                                    )
+                                {
+                                    info!(
+                                        "PARSE: Column '{}' identified as aggregate with type OID {} before translation hints",
+                                        col_name, oid
+                                    );
+                                    oid
+                                } else if col_name.eq_ignore_ascii_case("count(*)")
+                                    || col_name.eq_ignore_ascii_case("count")
+                                {
+                                    PgType::Int8.to_oid()
+                                } else if let Some(hint) = translation_metadata.get_hint(col_name)
+                                {
                                     // FIRST: Check for arithmetic expressions on float columns
                                     if hint.expression_type
                                         == Some(
@@ -965,7 +1148,7 @@ impl ExtendedQueryHandler {
                                                 "Arithmetic expression '{}' has no source column",
                                                 col_name
                                             );
-                                            0 // Will be handled below  
+                                            0 // Will be handled below
                                         }
                                     } else {
                                         info!(
@@ -986,7 +1169,11 @@ impl ExtendedQueryHandler {
 
                             // If we haven't found a type yet, continue with other priorities
                             if inferred_type != 0 {
-                                inferred_types.push(inferred_type);
+                                inferred_types.push(adjust_inferred_type_for_expression_alias(
+                                    &cleaned_query,
+                                    col_name,
+                                    inferred_type,
+                                ));
                                 continue;
                             }
 
@@ -1079,6 +1266,11 @@ impl ExtendedQueryHandler {
                                             value.as_deref(),
                                         )
                                     };
+                                    let inferred_type = adjust_inferred_type_for_expression_alias(
+                                        &cleaned_query,
+                                        col_name,
+                                        inferred_type,
+                                    );
                                     info!(
                                         "PARSE: Column '{}': inferring type from value '{}' -> type OID {} (should check schema first!)",
                                         col_name, value_str, inferred_type
@@ -1746,14 +1938,19 @@ impl ExtendedQueryHandler {
             false
         };
 
-        if query_starts_with_ignore_case(&query, "SELECT") && 
-           !query.contains("JOIN") && 
-           !query.contains("GROUP BY") && 
+        if query_starts_with_ignore_case(&query, "SELECT") &&
+           !query.contains("JOIN") &&
+           !query.contains("GROUP BY") &&
            !query.contains("HAVING") &&
            !has_non_param_cast &&  // Allow parameter casts like $1::INTEGER
            !query.contains("UNION") &&
            !query.contains("INTERSECT") &&
            !query.contains("EXCEPT") &&
+           !query.to_lowercase().contains("unnest(") &&
+           !query.to_lowercase().contains("pg_catalog") &&
+           !query.to_lowercase().contains("pg_roles") &&
+           !query.to_lowercase().contains("pg_user") &&
+           !query.to_lowercase().contains("information_schema") &&
            (result_formats.is_empty() || result_formats[0] == 0)
         {
             info!("🚀 Ultra-fast path triggered for query: {}", query);
@@ -2072,17 +2269,20 @@ impl ExtendedQueryHandler {
                             .columns
                             .iter()
                             .enumerate()
-                            .map(|(i, name)| FieldDescription {
-                                name: name.clone(),
-                                table_oid: 0,
-                                column_id: (i + 1) as i16,
-                                type_oid: field_types
+                            .map(|(i, name)| {
+                                let raw_type = field_types
                                     .get(i)
                                     .copied()
-                                    .unwrap_or_else(|| PgType::Text.to_oid()),
-                                type_size: -1,
-                                type_modifier: -1,
-                                format: 0,
+                                    .unwrap_or_else(|| PgType::Text.to_oid());
+                                FieldDescription {
+                                    name: name.clone(),
+                                    table_oid: 0,
+                                    column_id: (i + 1) as i16,
+                                    type_oid: Self::map_type_oid_for_wire(0, raw_type),
+                                    type_size: -1,
+                                    type_modifier: -1,
+                                    format: 0,
+                                }
                             })
                             .collect();
                         framed
@@ -2378,6 +2578,19 @@ impl ExtendedQueryHandler {
         let mut final_query =
             Self::substitute_parameters(query_to_use, &bound_values, &param_formats, &param_types)?;
 
+        // Ensure unnest() is translated in execute path as well.
+        // Some prepared-statement paths bypass parse-time translation state.
+        if crate::translator::UnnestTranslator::contains_unnest(&final_query) {
+            match crate::translator::UnnestTranslator::translate_with_metadata(&final_query) {
+                Ok((translated, _metadata)) => {
+                    final_query = translated;
+                }
+                Err(_) => {
+                    // Continue with original query
+                }
+            }
+        }
+
         // Apply JSON operator translation if needed
         if JsonTranslator::contains_json_operations(&final_query) {
             debug!("Query needs JSON operator translation: {}", final_query);
@@ -2412,7 +2625,7 @@ impl ExtendedQueryHandler {
         }
 
         // Execute based on query type
-        if query_starts_with_ignore_case(&final_query, "SELECT") {
+        if query_is_select_like(&final_query) {
             Self::execute_select(framed, db, session, &portal, &final_query, max_rows).await?;
         } else if query_starts_with_ignore_case(&final_query, "INSERT")
             || query_starts_with_ignore_case(&final_query, "UPDATE")
@@ -2451,6 +2664,28 @@ impl ExtendedQueryHandler {
                 session,
                 &final_query,
                 skip_row_desc,
+            )
+            .await?;
+        } else if let Some(message) =
+            crate::query::executor::unsupported_command_message(&final_query)
+        {
+            return Err(PgSqliteError::NotSupported(message.to_string()));
+        } else if query_starts_with_ignore_case(&final_query, "GRANT") {
+            crate::query::executor::handle_grant_revoke_command(
+                framed,
+                db,
+                session,
+                &final_query,
+                true,
+            )
+            .await?;
+        } else if query_starts_with_ignore_case(&final_query, "REVOKE") {
+            crate::query::executor::handle_grant_revoke_command(
+                framed,
+                db,
+                session,
+                &final_query,
+                false,
             )
             .await?;
         } else {
@@ -2536,6 +2771,12 @@ impl ExtendedQueryHandler {
                         }
                     }
                 }
+                Self::apply_expression_alias_type_corrections(query, &mut corrected_fields);
+                for fd in &mut corrected_fields {
+                    // Describe(statement) is text-mode metadata.
+                    fd.format = 0;
+                }
+                Self::map_field_description_types_for_wire(&mut corrected_fields);
 
                 for (i, fd) in corrected_fields.iter().enumerate() {
                     info!(
@@ -2756,10 +2997,11 @@ impl ExtendedQueryHandler {
                         }
                     }
                 }
+                Self::apply_expression_alias_type_corrections(&stmt.query, &mut fields);
 
                 // Update format fields based on result_formats from the portal
                 for (i, field) in fields.iter_mut().enumerate() {
-                    field.format = if portal.result_formats.is_empty() {
+                    let requested_format = if portal.result_formats.is_empty() {
                         0 // Default to text
                     } else if portal.result_formats.len() == 1 {
                         portal.result_formats[0] // Single format for all columns
@@ -2768,9 +3010,13 @@ impl ExtendedQueryHandler {
                     } else {
                         0 // Default to text if not enough formats
                     };
+                    field.format =
+                        Self::normalize_result_format_for_wire(requested_format, field.type_oid);
                 }
 
-                info!("Describe portal: sending updated fields: {:?}", fields);
+                let mut wire_fields = fields.clone();
+                Self::map_field_description_types_for_wire(&mut wire_fields);
+                info!("Describe portal: sending updated fields: {:?}", wire_fields);
 
                 // Update the statement's field_descriptions with the binary format
                 // so we know we've already sent RowDescription with binary format
@@ -2784,7 +3030,7 @@ impl ExtendedQueryHandler {
                 drop(statements);
 
                 framed
-                    .send(BackendMessage::RowDescription(fields))
+                    .send(BackendMessage::RowDescription(wire_fields))
                     .await
                     .map_err(PgSqliteError::Io)?;
             } else {
@@ -3126,13 +3372,27 @@ impl ExtendedQueryHandler {
         // Send only DataRow messages (no RowDescription)
         // This is used when RowDescription was already sent by Describe(Portal)
 
+        let effective_result_formats: Vec<i16> = if let Some(types) = field_types {
+            types
+                .iter()
+                .enumerate()
+                .map(|(i, &type_oid)| {
+                    let requested = Self::result_format_for_index(result_formats, i);
+                    Self::normalize_result_format_for_wire(requested, type_oid)
+                })
+                .collect()
+        } else {
+            result_formats.to_vec()
+        };
+
         // Check if we need binary encoding
-        let needs_binary_encoding = !result_formats.is_empty() && result_formats.contains(&1);
+        let needs_binary_encoding =
+            !effective_result_formats.is_empty() && effective_result_formats.contains(&1);
 
         if needs_binary_encoding {
             if let Some(types) = field_types {
                 for row in response.rows {
-                    let encoded_row = Self::encode_row(&row, result_formats, types)?;
+                    let encoded_row = Self::encode_row(&row, &effective_result_formats, types)?;
                     framed.send(BackendMessage::DataRow(encoded_row)).await?;
                 }
             } else {
@@ -3176,22 +3436,16 @@ impl ExtendedQueryHandler {
         // Always send RowDescription from this function
         // This is only called from fast paths which don't use Describe(Portal)
         let mut field_descriptions = Vec::new();
+        let mut effective_result_formats = Vec::with_capacity(response.columns.len());
         for (i, column_name) in response.columns.iter().enumerate() {
-            let format = if result_formats.is_empty() {
-                0 // Default to text if no formats specified
-            } else if result_formats.len() == 1 {
-                result_formats[0] // Single format applies to all columns
-            } else if i < result_formats.len() {
-                result_formats[i] // Use column-specific format
-            } else {
-                0 // Default to text if not enough formats
-            };
-
-            // Use provided type or default to TEXT
-            let type_oid = field_types
+            let requested_format = Self::result_format_for_index(result_formats, i);
+            let raw_type_oid = field_types
                 .and_then(|types| types.get(i))
                 .copied()
                 .unwrap_or(25); // Default to TEXT
+            let format = Self::normalize_result_format_for_wire(requested_format, raw_type_oid);
+            let type_oid = Self::map_type_oid_for_wire(format, raw_type_oid);
+            effective_result_formats.push(format);
 
             field_descriptions.push(FieldDescription {
                 name: column_name.clone(),
@@ -3294,21 +3548,23 @@ impl ExtendedQueryHandler {
                             converted_row.push(cell.clone());
                         }
                     }
-                    framed.send(BackendMessage::DataRow(converted_row)).await?;
+                    let encoded_row =
+                        Self::encode_row(&converted_row, &effective_result_formats, types)?;
+                    framed.send(BackendMessage::DataRow(encoded_row)).await?;
                 }
             }
         } else {
             // No conversion needed, but still need to apply binary encoding if requested
             // Check if binary format is requested
-            let needs_binary_encoding = !result_formats.is_empty()
-                && (result_formats.len() == 1 && result_formats[0] == 1
-                    || result_formats.contains(&1));
+            let needs_binary_encoding = !effective_result_formats.is_empty()
+                && (effective_result_formats.len() == 1 && effective_result_formats[0] == 1
+                    || effective_result_formats.contains(&1));
 
             if needs_binary_encoding {
                 if let Some(types) = field_types {
                     // Apply binary encoding to results
                     for row in response.rows {
-                        let encoded_row = Self::encode_row(&row, result_formats, types)?;
+                        let encoded_row = Self::encode_row(&row, &effective_result_formats, types)?;
                         framed.send(BackendMessage::DataRow(encoded_row)).await?;
                     }
                 } else {
@@ -5109,15 +5365,12 @@ impl ExtendedQueryHandler {
                     .into_iter()
                     .enumerate()
                     .map(|(i, mut field)| {
-                        field.format = if result_formats.is_empty() {
-                            0 // Default to text if no formats specified
-                        } else if result_formats.len() == 1 {
-                            result_formats[0] // Single format applies to all columns
-                        } else if i < result_formats.len() {
-                            result_formats[i] // Use column-specific format
-                        } else {
-                            0 // Default to text if not enough formats
-                        };
+                        let requested_format = Self::result_format_for_index(result_formats, i);
+                        field.format = Self::normalize_result_format_for_wire(
+                            requested_format,
+                            field.type_oid,
+                        );
+                        field.type_oid = Self::map_type_oid_for_wire(field.format, field.type_oid);
                         field
                     })
                     .collect()
@@ -5293,7 +5546,7 @@ impl ExtendedQueryHandler {
                                 } else {
                                     Some(i) // Use column index for ?column?
                                 };
-                                
+
                                 if let Some(idx) = param_idx
                                     && let Some(&type_oid) = inferred_types.get(idx) {
                                         info!("Column '{}' is parameter with inferred type OID {}", col_name, type_oid);
@@ -5301,7 +5554,7 @@ impl ExtendedQueryHandler {
                                     }
                             }
                         }
-                        
+
                         // First priority: Check schema table for stored type mappings
                         if let Some(pg_type) = schema_types.get(col_name) {
                             // Use basic type OID mapping (enum checking would require async which isn't allowed in closure)
@@ -5309,13 +5562,13 @@ impl ExtendedQueryHandler {
                             info!("Column '{}' found in schema as type '{}' (OID {})", col_name, pg_type, oid);
                             return oid;
                         }
-                        
+
                         // Second priority: Check for pre-computed aggregate functions
                         if let Some(&type_oid) = aggregate_types.get(&i) {
                             info!("Column '{}' has pre-computed aggregate type OID {}", col_name, type_oid);
                             return type_oid;
                         }
-                        
+
                         // Fallback: Check for aggregate functions without async lookup
                         let col_lower = col_name.to_lowercase();
                         if let Some(oid) = crate::types::SchemaTypeMapper::get_aggregate_return_type_with_query(
@@ -5324,32 +5577,37 @@ impl ExtendedQueryHandler {
                             info!("Column '{}' is aggregate function with type OID {}", col_name, oid);
                             return oid;
                         }
-                        
+
                         // Check if this looks like a user table (not system/catalog queries)
                         if let Some(ref table) = table_name {
                             // System/catalog tables are allowed to use type inference
-                            let is_system_table = table.starts_with("pg_") || 
+                            let is_system_table = table.starts_with("pg_") ||
                                                  table.starts_with("information_schema") ||
                                                  table == "__pgsqlite_schema";
-                            
+
                             if !is_system_table {
                                 // For user tables, missing metadata is an error
                                 debug!("Column '{}' in table '{}' not found in __pgsqlite_schema. Using type inference.", col_name, table);
                                 debug!("Falling back to type inference, but this may cause type compatibility issues.");
                             }
                         }
-                        
+
                         // Last resort: Try to get type from value (with warning for user tables)
                         let type_oid = if !response.rows.is_empty() {
                             if let Some(value) = response.rows[0].get(i) {
-                                crate::types::SchemaTypeMapper::infer_type_from_value(value.as_deref())
+                                let inferred = crate::types::SchemaTypeMapper::infer_type_from_value(
+                                    value.as_deref(),
+                                );
+                                adjust_inferred_type_for_expression_alias(
+                                    query, col_name, inferred,
+                                )
                             } else {
                                 25 // text for NULL
                             }
                         } else {
                             25 // text default when no data
                         };
-                        
+
                         warn!("Column '{}' using inferred type OID {} (should have metadata)", col_name, type_oid);
                         type_oid
                     })
@@ -5392,7 +5650,7 @@ impl ExtendedQueryHandler {
                 }
                 let field_types = corrected_field_types;
 
-                let fields: Vec<FieldDescription> = {
+                let mut fields: Vec<FieldDescription> = {
                     let portals = session.portals.read().await;
                     let portal = portals.get(portal_name).unwrap();
                     let result_formats = &portal.result_formats;
@@ -5402,21 +5660,18 @@ impl ExtendedQueryHandler {
                         .iter()
                         .enumerate()
                         .map(|(i, col_name)| {
-                            let format = if result_formats.is_empty() {
-                                0 // Default to text if no formats specified
-                            } else if result_formats.len() == 1 {
-                                result_formats[0] // Single format applies to all columns
-                            } else if i < result_formats.len() {
-                                result_formats[i] // Use column-specific format
-                            } else {
-                                0 // Default to text if not enough formats
-                            };
+                            let requested_format = Self::result_format_for_index(result_formats, i);
+                            let raw_type_oid = *field_types.get(i).unwrap_or(&25);
+                            let format = Self::normalize_result_format_for_wire(
+                                requested_format,
+                                raw_type_oid,
+                            );
 
                             FieldDescription {
                                 name: col_name.clone(),
                                 table_oid: 0,
                                 column_id: (i + 1) as i16,
-                                type_oid: *field_types.get(i).unwrap_or(&25),
+                                type_oid: Self::map_type_oid_for_wire(format, raw_type_oid),
                                 type_size: -1,
                                 type_modifier: -1,
                                 format,
@@ -5424,18 +5679,20 @@ impl ExtendedQueryHandler {
                         })
                         .collect()
                 };
+                Self::apply_expression_alias_type_corrections(query, &mut fields);
 
                 // Cache the field descriptions (without format, as that's per-portal)
                 let cache_fields = fields
                     .iter()
-                    .map(|f| FieldDescription {
+                    .enumerate()
+                    .map(|(i, f)| FieldDescription {
                         name: f.name.clone(),
                         table_oid: f.table_oid,
                         column_id: f.column_id,
-                        type_oid: f.type_oid,
+                        type_oid: *field_types.get(i).unwrap_or(&25), // Keep raw type in cache
                         type_size: f.type_size,
                         type_modifier: f.type_modifier,
-                        format: 0, // Default format for cache
+                        format: 0,
                     })
                     .collect::<Vec<_>>();
                 GLOBAL_ROW_DESCRIPTION_CACHE.insert(cache_key, cache_fields);
@@ -5596,8 +5853,14 @@ impl ExtendedQueryHandler {
                                     );
                                     25 // TEXT
                                 } else {
-                                    crate::types::SchemaTypeMapper::infer_type_from_value(
-                                        value.as_deref(),
+                                    let inferred =
+                                        crate::types::SchemaTypeMapper::infer_type_from_value(
+                                            value.as_deref(),
+                                        );
+                                    adjust_inferred_type_for_expression_alias(
+                                        &portal.query,
+                                        col_name,
+                                        inferred,
                                     )
                                 }
                             } else {
@@ -5649,6 +5912,16 @@ impl ExtendedQueryHandler {
 
             (portal.result_formats.clone(), field_types)
         };
+        let wire_result_formats: Vec<i16> = response
+            .columns
+            .iter()
+            .enumerate()
+            .map(|(i, _)| {
+                let requested_format = Self::result_format_for_index(&result_formats, i);
+                let type_oid = field_types.get(i).copied().unwrap_or(PgType::Text.to_oid());
+                Self::normalize_result_format_for_wire(requested_format, type_oid)
+            })
+            .collect();
 
         // Check if we're resuming from a previous Execute
         let has_portal_state = session
@@ -5713,7 +5986,7 @@ impl ExtendedQueryHandler {
         // Debug logging for catalog queries
         if query.contains("pg_catalog") || query.contains("pg_attribute") {
             info!("Catalog query data encoding:");
-            info!("  Result formats: {:?}", result_formats);
+            info!("  Result formats (wire): {:?}", wire_result_formats);
             info!("  Field types: {:?}", field_types);
             if !rows_to_send.is_empty() {
                 info!("  First row has {} columns", rows_to_send[0].len());
@@ -5743,8 +6016,8 @@ impl ExtendedQueryHandler {
                 );
                 info!(
                     "DEBUG: result_formats length: {}, contents: {:?}",
-                    result_formats.len(),
-                    result_formats
+                    wire_result_formats.len(),
+                    wire_result_formats
                 );
                 for (col_idx, col_data) in row.iter().enumerate() {
                     if let Some(data) = col_data {
@@ -5762,7 +6035,7 @@ impl ExtendedQueryHandler {
             }
 
             // Convert row data based on result formats
-            let encoded_row = Self::encode_row(&row, &result_formats, &field_types)?;
+            let encoded_row = Self::encode_row(&row, &wire_result_formats, &field_types)?;
 
             // TODO: Fix boolean field type conversion for catalog queries
             framed
@@ -5881,15 +6154,7 @@ impl ExtendedQueryHandler {
         let mut fields = Vec::new();
 
         for (i, col_name) in columns.iter().enumerate() {
-            let format = if result_formats.is_empty() {
-                0 // Default to text if no formats specified
-            } else if result_formats.len() == 1 {
-                result_formats[0] // Single format applies to all columns
-            } else if i < result_formats.len() {
-                result_formats[i] // Use column-specific format
-            } else {
-                0 // Default to text if not enough formats
-            };
+            let requested_format = Self::result_format_for_index(result_formats, i);
 
             // Try to get the actual type from schema
             let type_oid = if returning_clause == "*" || col_name == &col_name.to_lowercase() {
@@ -5931,11 +6196,12 @@ impl ExtendedQueryHandler {
                 25
             };
 
+            let format = Self::normalize_result_format_for_wire(requested_format, type_oid);
             fields.push(FieldDescription {
                 name: col_name.clone(),
                 table_oid: 0,
                 column_id: (i + 1) as i16,
-                type_oid,
+                type_oid: Self::map_type_oid_for_wire(format, type_oid),
                 type_size: -1,
                 type_modifier: -1,
                 format,
@@ -6350,6 +6616,12 @@ impl ExtendedQueryHandler {
             return Ok(());
         }
 
+        if crate::query::executor::handle_create_or_drop_role_command(framed, db, session, query)
+            .await?
+        {
+            return Ok(());
+        }
+
         // Handle CREATE TABLE translation
         if query_starts_with_ignore_case(query, "CREATE TABLE") {
             // Use translator with connection for ENUM support
@@ -6441,7 +6713,7 @@ impl ExtendedQueryHandler {
                                     let scale = tmp_typmod & 0xFFFF;
 
                                     let constraint_query = format!(
-                                        "INSERT OR REPLACE INTO __pgsqlite_numeric_constraints (table_name, column_name, precision, scale) 
+                                        "INSERT OR REPLACE INTO __pgsqlite_numeric_constraints (table_name, column_name, precision, scale)
                                          VALUES ('{}', '{}', {}, {})",
                                         table_name, parts[1], precision, scale
                                     );
@@ -6532,19 +6804,19 @@ impl ExtendedQueryHandler {
                                     element_type TEXT NOT NULL,
                                     dimensions INTEGER DEFAULT 1,
                                     PRIMARY KEY (table_name, column_name)
-                                )", 
+                                )",
                                 []
                             )?;
-                            
+
                             // Insert array column metadata
                             for (column_name, element_type, dimensions) in &array_columns {
                                 conn.execute(
-                                    "INSERT OR REPLACE INTO __pgsqlite_array_types (table_name, column_name, element_type, dimensions) 
+                                    "INSERT OR REPLACE INTO __pgsqlite_array_types (table_name, column_name, element_type, dimensions)
                                      VALUES (?1, ?2, ?3, ?4)",
                                     rusqlite::params![table_name, column_name, element_type, dimensions]
                                 )?;
-                                
-                                info!("Stored array column metadata for {}.{} (element_type: {}, dimensions: {})", 
+
+                                info!("Stored array column metadata for {}.{} (element_type: {}, dimensions: {})",
                                       table_name, column_name, element_type, dimensions);
                             }
                             Ok::<(), rusqlite::Error>(())
@@ -6729,20 +7001,34 @@ impl ExtendedQueryHandler {
             if let Some(col_info) = table_schema.column_map.get(&column.to_lowercase()) {
                 original_types.push(col_info.pg_oid);
 
-                // For certain PostgreSQL types that tokio-postgres doesn't support in binary format,
-                // use TEXT as the parameter type to allow string representation
-                let param_oid = match col_info.pg_oid {
-                    t if t == PgType::Macaddr8.to_oid() => PgType::Text.to_oid(), // MACADDR8 -> TEXT
-                    t if t == PgType::Macaddr.to_oid() => PgType::Text.to_oid(),  // MACADDR -> TEXT
-                    t if t == PgType::Inet.to_oid() => PgType::Text.to_oid(),     // INET -> TEXT
-                    t if t == PgType::Cidr.to_oid() => PgType::Text.to_oid(),     // CIDR -> TEXT
-                    t if t == PgType::Money.to_oid() => PgType::Text.to_oid(),    // MONEY -> TEXT
-                    t if t == PgType::Int4range.to_oid() => PgType::Text.to_oid(), // INT4RANGE -> TEXT
-                    t if t == PgType::Int8range.to_oid() => PgType::Text.to_oid(), // INT8RANGE -> TEXT
-                    t if t == PgType::Numrange.to_oid() => PgType::Text.to_oid(), // NUMRANGE -> TEXT
-                    t if t == PgType::Bit.to_oid() => PgType::Text.to_oid(),      // BIT -> TEXT
-                    t if t == PgType::Varbit.to_oid() => PgType::Text.to_oid(),   // VARBIT -> TEXT
-                    _ => col_info.pg_oid, // Use original OID for supported types
+                // For bind compatibility, expose text-represented complex types as TEXT in
+                // ParameterDescription so string parameters are accepted by clients.
+                // Keep original_types unchanged for server-side execution/decoding.
+                let param_oid = match PgType::from_oid(col_info.pg_oid) {
+                    Some(pg_type)
+                        if pg_type.is_array()
+                            || matches!(
+                                pg_type,
+                                PgType::Date
+                                    | PgType::Time
+                                    | PgType::Timestamp
+                                    | PgType::Timetz
+                                    | PgType::Interval
+                                    | PgType::Money
+                                    | PgType::Macaddr8
+                                    | PgType::Macaddr
+                                    | PgType::Inet
+                                    | PgType::Cidr
+                                    | PgType::Int4range
+                                    | PgType::Int8range
+                                    | PgType::Numrange
+                                    | PgType::Bit
+                                    | PgType::Varbit
+                            ) =>
+                    {
+                        PgType::Text.to_oid()
+                    }
+                    _ => col_info.pg_oid, // Use original OID for other supported types
                 };
 
                 param_types.push(param_oid);

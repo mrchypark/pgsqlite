@@ -1,9 +1,8 @@
 use super::pg_proc::PgProcHandler;
 use super::{
-    column_metadata,
-    pg_attribute::PgAttributeHandler, pg_class::PgClassHandler, pg_constraint::PgConstraintHandler,
-    pg_cursors::PgCursorsHandler, pg_depend::PgDependHandler, pg_description::PgDescriptionHandler,
-    pg_enum::PgEnumHandler, pg_locks::PgLocksHandler,
+    column_metadata, pg_attribute::PgAttributeHandler, pg_class::PgClassHandler,
+    pg_constraint::PgConstraintHandler, pg_cursors::PgCursorsHandler, pg_depend::PgDependHandler,
+    pg_description::PgDescriptionHandler, pg_enum::PgEnumHandler, pg_locks::PgLocksHandler,
     pg_prepared_statements::PgPreparedStatementsHandler, pg_prepared_xacts::PgPreparedXactsHandler,
     pg_roles::PgRolesHandler, pg_sequence::PgSequenceHandler, pg_settings::PgSettingsHandler,
     pg_stat_io::PgStatIoHandler, pg_stats::PgStatsHandler, pg_trigger::PgTriggerHandler,
@@ -736,7 +735,7 @@ impl CatalogInterceptor {
             // Handle pg_roles queries
             if table_name.contains("pg_roles") || table_name.contains("pg_catalog.pg_roles") {
                 info!("Routing to PgRolesHandler for table: {}", table_name);
-                return match PgRolesHandler::handle_query(select, &db).await {
+                return match PgRolesHandler::handle_query(select, &db, session.as_ref()).await {
                     Ok(response) => {
                         debug!("PgRolesHandler returned {} rows", response.rows.len());
                         Some(Ok(response))
@@ -750,7 +749,7 @@ impl CatalogInterceptor {
             // Handle pg_user queries
             if table_name.contains("pg_user") || table_name.contains("pg_catalog.pg_user") {
                 info!("Routing to PgUserHandler for table: {}", table_name);
-                return match PgUserHandler::handle_query(select, &db).await {
+                return match PgUserHandler::handle_query(select, &db, session.as_ref()).await {
                     Ok(response) => {
                         debug!("PgUserHandler returned {} rows", response.rows.len());
                         Some(Ok(response))
@@ -855,7 +854,9 @@ impl CatalogInterceptor {
             if table_name.contains("pg_prepared_statements")
                 || table_name.contains("pg_catalog.pg_prepared_statements")
             {
-                return Some(PgPreparedStatementsHandler::handle_query(select, &db).await);
+                return Some(
+                    PgPreparedStatementsHandler::handle_query(select, &db, session.clone()).await,
+                );
             }
 
             // Handle pg_prepared_xacts queries
@@ -867,7 +868,7 @@ impl CatalogInterceptor {
 
             // Handle pg_cursors queries
             if table_name.contains("pg_cursors") || table_name.contains("pg_catalog.pg_cursors") {
-                return Some(PgCursorsHandler::handle_query(select, &db).await);
+                return Some(PgCursorsHandler::handle_query(select, &db, session.clone()).await);
             }
 
             // Note: pg_index is a SQLite view that will be executed normally
@@ -2056,11 +2057,15 @@ impl CatalogInterceptor {
     }
 
     fn information_schema_key_column_usage_columns() -> Vec<String> {
-        column_metadata::column_names(column_metadata::information_schema_key_column_usage_columns())
+        column_metadata::column_names(
+            column_metadata::information_schema_key_column_usage_columns(),
+        )
     }
 
     fn information_schema_table_constraints_columns() -> Vec<String> {
-        column_metadata::column_names(column_metadata::information_schema_table_constraints_columns())
+        column_metadata::column_names(
+            column_metadata::information_schema_table_constraints_columns(),
+        )
     }
 
     fn information_schema_routines_columns() -> Vec<String> {
@@ -2072,11 +2077,15 @@ impl CatalogInterceptor {
     }
 
     fn information_schema_referential_constraints_columns() -> Vec<String> {
-        column_metadata::column_names(column_metadata::information_schema_referential_constraints_columns())
+        column_metadata::column_names(
+            column_metadata::information_schema_referential_constraints_columns(),
+        )
     }
 
     fn information_schema_check_constraints_columns() -> Vec<String> {
-        column_metadata::column_names(column_metadata::information_schema_check_constraints_columns())
+        column_metadata::column_names(
+            column_metadata::information_schema_check_constraints_columns(),
+        )
     }
 
     fn information_schema_triggers_columns() -> Vec<String> {

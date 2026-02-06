@@ -1,9 +1,9 @@
-use crate::session::db_handler::{DbHandler, DbResponse};
-use crate::PgSqliteError;
-use sqlparser::ast::{Select, SelectItem, Expr};
-use tracing::debug;
-use std::collections::HashMap;
 use super::where_evaluator::WhereEvaluator;
+use crate::PgSqliteError;
+use crate::session::db_handler::{DbHandler, DbResponse};
+use sqlparser::ast::{Expr, Select, SelectItem};
+use std::collections::HashMap;
+use tracing::debug;
 
 /// Handler for pg_stat_io view - PostgreSQL 16+ I/O statistics
 /// Provides information about I/O operations for the database
@@ -19,13 +19,23 @@ impl PgStatIoHandler {
         // pg_stat_io columns (PostgreSQL 16+)
         let all_columns = vec![
             "backend_type".to_string(),
+            "object".to_string(),
+            "context".to_string(),
             "reads".to_string(),
+            "read_time".to_string(),
             "writes".to_string(),
-            "write_bytes".to_string(),
-            "opsize_reads".to_string(),
-            "opsize_writes".to_string(),
-            "opbytes_reads".to_string(),
-            "opbytes_writes".to_string(),
+            "write_time".to_string(),
+            "writebacks".to_string(),
+            "writeback_time".to_string(),
+            "extends".to_string(),
+            "extend_time".to_string(),
+            "op_bytes".to_string(),
+            "hits".to_string(),
+            "evictions".to_string(),
+            "reuses".to_string(),
+            "fsyncs".to_string(),
+            "fsync_time".to_string(),
+            "stats_reset".to_string(),
         ];
 
         let selected_columns = Self::get_selected_columns(&select.projection, &all_columns);
@@ -74,7 +84,10 @@ impl PgStatIoHandler {
                         selected.push(col_name);
                     }
                 }
-                SelectItem::ExprWithAlias { expr: Expr::Identifier(ident), alias } => {
+                SelectItem::ExprWithAlias {
+                    expr: Expr::Identifier(ident),
+                    alias,
+                } => {
                     let col_name = ident.value.to_lowercase();
                     if all_columns.contains(&col_name) {
                         selected.push(alias.value.clone());
@@ -98,49 +111,101 @@ impl PgStatIoHandler {
             {
                 let mut map = HashMap::new();
                 map.insert("backend_type".to_string(), b"client backend".to_vec());
+                map.insert("object".to_string(), b"relation".to_vec());
+                map.insert("context".to_string(), b"normal".to_vec());
                 map.insert("reads".to_string(), b"0".to_vec());
+                map.insert("read_time".to_string(), b"0".to_vec());
                 map.insert("writes".to_string(), b"0".to_vec());
-                map.insert("write_bytes".to_string(), b"0".to_vec());
-                map.insert("opsize_reads".to_string(), b"0".to_vec());
-                map.insert("opsize_writes".to_string(), b"0".to_vec());
-                map.insert("opbytes_reads".to_string(), b"0".to_vec());
-                map.insert("opbytes_writes".to_string(), b"0".to_vec());
+                map.insert("write_time".to_string(), b"0".to_vec());
+                map.insert("writebacks".to_string(), b"0".to_vec());
+                map.insert("writeback_time".to_string(), b"0".to_vec());
+                map.insert("extends".to_string(), b"0".to_vec());
+                map.insert("extend_time".to_string(), b"0".to_vec());
+                map.insert("op_bytes".to_string(), b"0".to_vec());
+                map.insert("hits".to_string(), b"0".to_vec());
+                map.insert("evictions".to_string(), b"0".to_vec());
+                map.insert("reuses".to_string(), b"0".to_vec());
+                map.insert("fsyncs".to_string(), b"0".to_vec());
+                map.insert("fsync_time".to_string(), b"0".to_vec());
+                map.insert(
+                    "stats_reset".to_string(),
+                    b"1970-01-01 00:00:00+00".to_vec(),
+                );
                 map
             },
             {
                 let mut map = HashMap::new();
                 map.insert("backend_type".to_string(), b"background writer".to_vec());
+                map.insert("object".to_string(), b"relation".to_vec());
+                map.insert("context".to_string(), b"normal".to_vec());
                 map.insert("reads".to_string(), b"0".to_vec());
+                map.insert("read_time".to_string(), b"0".to_vec());
                 map.insert("writes".to_string(), b"0".to_vec());
-                map.insert("write_bytes".to_string(), b"0".to_vec());
-                map.insert("opsize_reads".to_string(), b"0".to_vec());
-                map.insert("opsize_writes".to_string(), b"0".to_vec());
-                map.insert("opbytes_reads".to_string(), b"0".to_vec());
-                map.insert("opbytes_writes".to_string(), b"0".to_vec());
+                map.insert("write_time".to_string(), b"0".to_vec());
+                map.insert("writebacks".to_string(), b"0".to_vec());
+                map.insert("writeback_time".to_string(), b"0".to_vec());
+                map.insert("extends".to_string(), b"0".to_vec());
+                map.insert("extend_time".to_string(), b"0".to_vec());
+                map.insert("op_bytes".to_string(), b"0".to_vec());
+                map.insert("hits".to_string(), b"0".to_vec());
+                map.insert("evictions".to_string(), b"0".to_vec());
+                map.insert("reuses".to_string(), b"0".to_vec());
+                map.insert("fsyncs".to_string(), b"0".to_vec());
+                map.insert("fsync_time".to_string(), b"0".to_vec());
+                map.insert(
+                    "stats_reset".to_string(),
+                    b"1970-01-01 00:00:00+00".to_vec(),
+                );
                 map
             },
             {
                 let mut map = HashMap::new();
                 map.insert("backend_type".to_string(), b"checkpointer".to_vec());
+                map.insert("object".to_string(), b"relation".to_vec());
+                map.insert("context".to_string(), b"normal".to_vec());
                 map.insert("reads".to_string(), b"0".to_vec());
+                map.insert("read_time".to_string(), b"0".to_vec());
                 map.insert("writes".to_string(), b"0".to_vec());
-                map.insert("write_bytes".to_string(), b"0".to_vec());
-                map.insert("opsize_reads".to_string(), b"0".to_vec());
-                map.insert("opsize_writes".to_string(), b"0".to_vec());
-                map.insert("opbytes_reads".to_string(), b"0".to_vec());
-                map.insert("opbytes_writes".to_string(), b"0".to_vec());
+                map.insert("write_time".to_string(), b"0".to_vec());
+                map.insert("writebacks".to_string(), b"0".to_vec());
+                map.insert("writeback_time".to_string(), b"0".to_vec());
+                map.insert("extends".to_string(), b"0".to_vec());
+                map.insert("extend_time".to_string(), b"0".to_vec());
+                map.insert("op_bytes".to_string(), b"0".to_vec());
+                map.insert("hits".to_string(), b"0".to_vec());
+                map.insert("evictions".to_string(), b"0".to_vec());
+                map.insert("reuses".to_string(), b"0".to_vec());
+                map.insert("fsyncs".to_string(), b"0".to_vec());
+                map.insert("fsync_time".to_string(), b"0".to_vec());
+                map.insert(
+                    "stats_reset".to_string(),
+                    b"1970-01-01 00:00:00+00".to_vec(),
+                );
                 map
             },
             {
                 let mut map = HashMap::new();
                 map.insert("backend_type".to_string(), b"walwriter".to_vec());
+                map.insert("object".to_string(), b"wal".to_vec());
+                map.insert("context".to_string(), b"normal".to_vec());
                 map.insert("reads".to_string(), b"0".to_vec());
+                map.insert("read_time".to_string(), b"0".to_vec());
                 map.insert("writes".to_string(), b"0".to_vec());
-                map.insert("write_bytes".to_string(), b"0".to_vec());
-                map.insert("opsize_reads".to_string(), b"0".to_vec());
-                map.insert("opsize_writes".to_string(), b"0".to_vec());
-                map.insert("opbytes_reads".to_string(), b"0".to_vec());
-                map.insert("opbytes_writes".to_string(), b"0".to_vec());
+                map.insert("write_time".to_string(), b"0".to_vec());
+                map.insert("writebacks".to_string(), b"0".to_vec());
+                map.insert("writeback_time".to_string(), b"0".to_vec());
+                map.insert("extends".to_string(), b"0".to_vec());
+                map.insert("extend_time".to_string(), b"0".to_vec());
+                map.insert("op_bytes".to_string(), b"0".to_vec());
+                map.insert("hits".to_string(), b"0".to_vec());
+                map.insert("evictions".to_string(), b"0".to_vec());
+                map.insert("reuses".to_string(), b"0".to_vec());
+                map.insert("fsyncs".to_string(), b"0".to_vec());
+                map.insert("fsync_time".to_string(), b"0".to_vec());
+                map.insert(
+                    "stats_reset".to_string(),
+                    b"1970-01-01 00:00:00+00".to_vec(),
+                );
                 map
             },
         ]
