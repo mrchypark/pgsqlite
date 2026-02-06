@@ -3,6 +3,7 @@ use crate::PgSqliteError;
 use crate::session::SessionState;
 use crate::session::db_handler::{DbHandler, DbResponse};
 use crate::types::SchemaTypeMapper;
+use chrono::{DateTime, Utc};
 use sqlparser::ast::{Expr, Select, SelectItem};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -105,6 +106,7 @@ impl PgPreparedStatementsHandler {
         };
 
         let statements = session.prepared_statements.read().await;
+        let statement_meta = session.prepared_statement_meta.read().await;
         let mut rows = Vec::new();
 
         for (name, stmt) in statements.iter() {
@@ -118,16 +120,44 @@ impl PgPreparedStatementsHandler {
             row.insert("statement".to_string(), stmt.query.as_bytes().to_vec());
             row.insert(
                 "prepare_time".to_string(),
-                b"1970-01-01 00:00:00+00".to_vec(),
+                statement_meta
+                    .get(name)
+                    .map(|meta| Self::format_timestamptz(meta.prepare_time))
+                    .unwrap_or_else(|| "1970-01-01 00:00:00+00".to_string())
+                    .into_bytes(),
             );
             row.insert(
                 "parameter_types".to_string(),
                 Self::format_regtype_array(&stmt.param_types).into_bytes(),
             );
             row.insert("result_types".to_string(), b"{}".to_vec());
-            row.insert("from_sql".to_string(), b"f".to_vec());
-            row.insert("generic_plans".to_string(), b"0".to_vec());
-            row.insert("custom_plans".to_string(), b"0".to_vec());
+            row.insert(
+                "from_sql".to_string(),
+                statement_meta
+                    .get(name)
+                    .map(|meta| {
+                        if meta.from_sql {
+                            b"t".to_vec()
+                        } else {
+                            b"f".to_vec()
+                        }
+                    })
+                    .unwrap_or_else(|| b"f".to_vec()),
+            );
+            row.insert(
+                "generic_plans".to_string(),
+                statement_meta
+                    .get(name)
+                    .map(|meta| meta.generic_plans.to_string().into_bytes())
+                    .unwrap_or_else(|| b"0".to_vec()),
+            );
+            row.insert(
+                "custom_plans".to_string(),
+                statement_meta
+                    .get(name)
+                    .map(|meta| meta.custom_plans.to_string().into_bytes())
+                    .unwrap_or_else(|| b"0".to_vec()),
+            );
             rows.push(row);
         }
 
@@ -150,6 +180,11 @@ impl PgPreparedStatementsHandler {
             .map(Self::escape_array_item)
             .collect();
         format!("{{{}}}", values.join(","))
+    }
+
+    fn format_timestamptz(ts: std::time::SystemTime) -> String {
+        let dt: DateTime<Utc> = ts.into();
+        dt.format("%Y-%m-%d %H:%M:%S%.6f+00").to_string()
     }
 
     fn escape_array_item(item: &str) -> String {

@@ -47,36 +47,8 @@ pub const INFORMATION_SCHEMA_TABLES: &[&str] = &[
 pub struct CatalogInterceptor;
 
 impl CatalogInterceptor {
-    /// Check if a query is targeting pg_catalog and handle it
-    pub async fn intercept_query(
-        query: &str,
-        db: Arc<DbHandler>,
-        session: Option<Arc<SessionState>>,
-    ) -> Option<Result<DbResponse, PgSqliteError>> {
-        // Quick check to avoid parsing if not a catalog query
-        let lower_query = query.to_lowercase();
-
-        // Check for cache status query
-        if lower_query.contains("select * from pgsqlite_cache_status") {
-            let (columns, rows) = crate::cache::format_cache_status_as_table();
-            let rows_affected = rows.len();
-            let response = DbResponse {
-                columns,
-                rows,
-                rows_affected,
-            };
-            return Some(Ok(response));
-        }
-
-        // Special case: pg_catalog.version() should be handled by SQLite function, not catalog interceptor
-        if lower_query.trim() == "select pg_catalog.version()"
-            || lower_query.trim() == "select version()"
-        {
-            return None;
-        }
-
-        // Check for catalog tables
-        let has_catalog_tables = lower_query.contains("pg_catalog")
+    fn contains_catalog_reference_lower(lower_query: &str) -> bool {
+        lower_query.contains("pg_catalog")
             || lower_query.contains("pg_type")
             || lower_query.contains("pg_namespace")
             || lower_query.contains("pg_range")
@@ -107,17 +79,62 @@ impl CatalogInterceptor {
             || lower_query.contains("pg_prepared_statements")
             || lower_query.contains("pg_prepared_xacts")
             || lower_query.contains("pg_cursors")
-            || lower_query.contains("information_schema");
+            || lower_query.contains("information_schema")
+    }
 
-        // Check for system functions
-        let has_system_functions = lower_query.contains("to_regtype")
+    fn contains_system_function_reference_lower(lower_query: &str) -> bool {
+        lower_query.contains("to_regtype")
             || lower_query.contains("pg_get_constraintdef")
             || lower_query.contains("pg_table_is_visible")
             || lower_query.contains("format_type")
             || lower_query.contains("pg_get_expr")
             || lower_query.contains("pg_get_userbyid")
             || lower_query.contains("pg_get_indexdef")
-            || lower_query.contains("pg_size_pretty");
+            || lower_query.contains("pg_size_pretty")
+    }
+
+    pub fn contains_catalog_reference(query: &str) -> bool {
+        let lower_query = query.to_lowercase();
+        Self::contains_catalog_reference_lower(&lower_query)
+    }
+
+    pub fn should_intercept_query(query: &str) -> bool {
+        let lower_query = query.to_lowercase();
+        lower_query.contains("select * from pgsqlite_cache_status")
+            || Self::contains_catalog_reference_lower(&lower_query)
+            || Self::contains_system_function_reference_lower(&lower_query)
+    }
+
+    /// Check if a query is targeting pg_catalog and handle it
+    pub async fn intercept_query(
+        query: &str,
+        db: Arc<DbHandler>,
+        session: Option<Arc<SessionState>>,
+    ) -> Option<Result<DbResponse, PgSqliteError>> {
+        // Quick check to avoid parsing if not a catalog query
+        let lower_query = query.to_lowercase();
+
+        // Check for cache status query
+        if lower_query.contains("select * from pgsqlite_cache_status") {
+            let (columns, rows) = crate::cache::format_cache_status_as_table();
+            let rows_affected = rows.len();
+            let response = DbResponse {
+                columns,
+                rows,
+                rows_affected,
+            };
+            return Some(Ok(response));
+        }
+
+        // Special case: pg_catalog.version() should be handled by SQLite function, not catalog interceptor
+        if lower_query.trim() == "select pg_catalog.version()"
+            || lower_query.trim() == "select version()"
+        {
+            return None;
+        }
+
+        let has_catalog_tables = Self::contains_catalog_reference_lower(&lower_query);
+        let has_system_functions = Self::contains_system_function_reference_lower(&lower_query);
 
         if !has_catalog_tables && !has_system_functions {
             return None;

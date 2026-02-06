@@ -294,6 +294,15 @@ impl ExtendedQueryHandler {
                     .write()
                     .await
                     .insert(String::new(), stmt);
+                session.prepared_statement_meta.write().await.insert(
+                    String::new(),
+                    crate::session::PreparedStatementMeta {
+                        prepare_time: std::time::SystemTime::now(),
+                        from_sql: false,
+                        generic_plans: 0,
+                        custom_plans: 0,
+                    },
+                );
 
                 framed
                     .send(BackendMessage::ParseComplete)
@@ -414,6 +423,15 @@ impl ExtendedQueryHandler {
                 .write()
                 .await
                 .insert(name.clone(), stmt);
+            session.prepared_statement_meta.write().await.insert(
+                name.clone(),
+                crate::session::PreparedStatementMeta {
+                    prepare_time: std::time::SystemTime::now(),
+                    from_sql: false,
+                    generic_plans: 0,
+                    custom_plans: 0,
+                },
+            );
 
             // Send ParseComplete
             framed
@@ -749,6 +767,10 @@ impl ExtendedQueryHandler {
                 || cleaned_query.contains("pg_constraint")
                 || cleaned_query.contains("pg_depend")
                 || cleaned_query.contains("pg_database")
+                || cleaned_query.contains("pg_prepared_statements")
+                || cleaned_query.contains("pg_prepared_xacts")
+                || cleaned_query.contains("pg_cursors")
+                || cleaned_query.contains("pg_stat_io")
             {
                 info!(
                     "PARSE: Skipping field description for catalog query: {}",
@@ -1514,6 +1536,15 @@ impl ExtendedQueryHandler {
             .write()
             .await
             .insert(name.clone(), stmt);
+        session.prepared_statement_meta.write().await.insert(
+            name.clone(),
+            crate::session::PreparedStatementMeta {
+                prepare_time: std::time::SystemTime::now(),
+                from_sql: false,
+                generic_plans: 0,
+                custom_plans: 0,
+            },
+        );
 
         // Send ParseComplete
         framed
@@ -1803,6 +1834,14 @@ impl ExtendedQueryHandler {
             .write()
             .await
             .insert(portal.clone(), portal_obj);
+        session.portal_meta.write().await.insert(
+            portal.clone(),
+            crate::session::PortalMeta {
+                created_at: std::time::SystemTime::now(),
+                is_holdable: false,
+                is_scrollable: false,
+            },
+        );
 
         // Send BindComplete
         framed
@@ -1938,6 +1977,8 @@ impl ExtendedQueryHandler {
             false
         };
 
+        let should_intercept_query = CatalogInterceptor::should_intercept_query(&query);
+
         if query_starts_with_ignore_case(&query, "SELECT") &&
            !query.contains("JOIN") &&
            !query.contains("GROUP BY") &&
@@ -1947,10 +1988,7 @@ impl ExtendedQueryHandler {
            !query.contains("INTERSECT") &&
            !query.contains("EXCEPT") &&
            !query.to_lowercase().contains("unnest(") &&
-           !query.to_lowercase().contains("pg_catalog") &&
-           !query.to_lowercase().contains("pg_roles") &&
-           !query.to_lowercase().contains("pg_user") &&
-           !query.to_lowercase().contains("information_schema") &&
+           !should_intercept_query &&
            (result_formats.is_empty() || result_formats[0] == 0)
         {
             info!("🚀 Ultra-fast path triggered for query: {}", query);
@@ -2611,6 +2649,18 @@ impl ExtendedQueryHandler {
         debug!("Final query after substitution: {}", final_query);
         debug!("Original query had {} bound values", bound_values.len());
 
+        {
+            let mut stmt_meta = session.prepared_statement_meta.write().await;
+            if let Some(meta) = stmt_meta.get_mut(&statement_name) {
+                if bound_values.is_empty() {
+                    meta.generic_plans = meta.generic_plans.saturating_add(1);
+                } else {
+                    meta.custom_plans = meta.custom_plans.saturating_add(1);
+                }
+            }
+        }
+        let _io_record = crate::catalog::pg_stat_io::StatementIoRecordGuard::start(&final_query);
+
         // Debug: Check if this is a catalog query
         if final_query.contains("pg_catalog")
             || final_query.contains("pg_type")
@@ -2737,7 +2787,11 @@ impl ExtendedQueryHandler {
                 || query.contains("pg_index")
                 || query.contains("pg_depend")
                 || query.contains("pg_database")
-                || query.contains("information_schema");
+                || query.contains("information_schema")
+                || query.contains("pg_prepared_statements")
+                || query.contains("pg_prepared_xacts")
+                || query.contains("pg_cursors")
+                || query.contains("pg_stat_io");
 
             // Then send RowDescription or NoData
             if !stmt.field_descriptions.is_empty() {
@@ -3062,10 +3116,12 @@ impl ExtendedQueryHandler {
         if typ == b'S' {
             // Close statement
             session.prepared_statements.write().await.remove(&name);
+            session.prepared_statement_meta.write().await.remove(&name);
         } else {
             // Close portal
             session.portal_manager.close_portal(&name);
             session.portals.write().await.remove(&name);
+            session.portal_meta.write().await.remove(&name);
         }
 
         // Send CloseComplete

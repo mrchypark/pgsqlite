@@ -1,14 +1,14 @@
-use std::collections::HashMap;
-use tokio::sync::{RwLock, Mutex};
-use crate::protocol::TransactionStatus;
 use crate::cache::QueryCache;
 use crate::config::global_config;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use once_cell::sync::Lazy;
+use crate::protocol::TransactionStatus;
 use crate::session::DbHandler;
+use once_cell::sync::Lazy;
 use parking_lot::Mutex as ParkingMutex;
 use rusqlite::Connection;
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use tokio::sync::{Mutex, RwLock};
 
 // Global query cache shared across all sessions
 pub static GLOBAL_QUERY_CACHE: Lazy<Arc<QueryCache>> = Lazy::new(|| {
@@ -25,7 +25,9 @@ pub struct SessionState {
     pub user: String,
     pub parameters: RwLock<HashMap<String, String>>,
     pub prepared_statements: RwLock<HashMap<String, PreparedStatement>>,
+    pub prepared_statement_meta: RwLock<HashMap<String, PreparedStatementMeta>>,
     pub portals: RwLock<HashMap<String, Portal>>,
+    pub portal_meta: RwLock<HashMap<String, PortalMeta>>,
     pub transaction_status: RwLock<TransactionStatus>,
     pub portal_manager: Arc<super::PortalManager>,
     pub python_param_mapping: RwLock<HashMap<String, Vec<String>>>, // Maps statement name to Python parameter names
@@ -42,6 +44,14 @@ pub struct PreparedStatement {
     pub translation_metadata: Option<crate::translator::TranslationMetadata>, // Type hints from query translation
 }
 
+#[derive(Clone, Debug)]
+pub struct PreparedStatementMeta {
+    pub prepare_time: std::time::SystemTime,
+    pub from_sql: bool,
+    pub generic_plans: u64,
+    pub custom_plans: u64,
+}
+
 #[derive(Clone)]
 pub struct Portal {
     pub statement_name: String,
@@ -51,6 +61,13 @@ pub struct Portal {
     pub param_formats: Vec<i16>,
     pub result_formats: Vec<i16>,
     pub inferred_param_types: Option<Vec<i32>>, // Types inferred from actual values
+}
+
+#[derive(Clone, Debug)]
+pub struct PortalMeta {
+    pub created_at: std::time::SystemTime,
+    pub is_holdable: bool,
+    pub is_scrollable: bool,
 }
 
 impl SessionState {
@@ -64,17 +81,27 @@ impl SessionState {
         parameters.insert("IntervalStyle".to_string(), "postgres".to_string());
         parameters.insert("integer_datetimes".to_string(), "on".to_string());
         parameters.insert("SEARCH_PATH".to_string(), "public".to_string());
-        
+        parameters.insert(
+            "DEFAULT_TRANSACTION_ISOLATION".to_string(),
+            "read committed".to_string(),
+        );
+        parameters.insert(
+            "TRANSACTION_ISOLATION".to_string(),
+            "read committed".to_string(),
+        );
+
         // Increment active session count
         ACTIVE_SESSION_COUNT.fetch_add(1, Ordering::Relaxed);
-        
+
         SessionState {
             id: uuid::Uuid::new_v4(),
             database,
             user,
             parameters: RwLock::new(parameters),
             prepared_statements: RwLock::new(HashMap::new()),
+            prepared_statement_meta: RwLock::new(HashMap::new()),
             portals: RwLock::new(HashMap::new()),
+            portal_meta: RwLock::new(HashMap::new()),
             transaction_status: RwLock::new(TransactionStatus::Idle),
             portal_manager: Arc::new(super::PortalManager::new(100)), // Allow up to 100 concurrent portals
             python_param_mapping: RwLock::new(HashMap::new()),
@@ -96,33 +123,33 @@ impl SessionState {
             TransactionStatus::InTransaction | TransactionStatus::InFailedTransaction
         )
     }
-    
+
     /// Set the transaction status
     pub async fn set_transaction_status(&self, status: TransactionStatus) {
         *self.transaction_status.write().await = status;
     }
-    
+
     /// Get the transaction status
     pub async fn get_transaction_status(&self) -> TransactionStatus {
         *self.transaction_status.read().await
     }
-    
+
     /// Get the current number of active sessions
     pub async fn get_session_count(&self) -> usize {
         ACTIVE_SESSION_COUNT.load(Ordering::Relaxed)
     }
-    
+
     /// Set the database handler for this session
     /// This should be called after the session is created and a connection is established
     pub async fn set_db_handler(&self, db_handler: Arc<DbHandler>) {
         *self.db_handler.lock().await = Some(db_handler);
     }
-    
+
     /// Get the database handler for this session
     pub async fn get_db_handler(&self) -> Option<Arc<DbHandler>> {
         self.db_handler.lock().await.clone()
     }
-    
+
     /// Initialize the session connection with the database handler
     /// This ensures the session has its dedicated connection
     pub async fn initialize_connection(&self) -> Result<(), crate::PgSqliteError> {
@@ -131,23 +158,23 @@ impl SessionState {
         }
         Ok(())
     }
-    
+
     /// Clean up the session connection
     /// This should be called when the session is being terminated
     pub async fn cleanup_connection(&self) {
         // Clear the cached connection first
         self.cached_connection.lock().take();
-        
+
         if let Some(ref db_handler) = *self.db_handler.lock().await {
             db_handler.remove_session_connection(&self.id);
         }
     }
-    
+
     /// Cache a connection for fast access
     pub fn cache_connection(&self, connection: Arc<ParkingMutex<Connection>>) {
         *self.cached_connection.lock() = Some(connection);
     }
-    
+
     /// Get the cached connection if available
     pub fn get_cached_connection(&self) -> Option<Arc<ParkingMutex<Connection>>> {
         self.cached_connection.lock().clone()
@@ -159,7 +186,7 @@ impl Drop for SessionState {
         // Note: We can't do async operations in Drop, so cleanup is handled
         // explicitly when the session ends or via a background task
         // For now, just decrement the session count
-        
+
         // Decrement active session count when session is destroyed
         ACTIVE_SESSION_COUNT.fetch_sub(1, Ordering::Relaxed);
     }
