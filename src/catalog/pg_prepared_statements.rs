@@ -1,9 +1,13 @@
-use crate::session::db_handler::{DbHandler, DbResponse};
-use crate::PgSqliteError;
-use sqlparser::ast::{Select, SelectItem, Expr};
-use tracing::debug;
-use std::collections::HashMap;
+use super::utils::format_timestamptz;
 use super::where_evaluator::WhereEvaluator;
+use crate::PgSqliteError;
+use crate::session::SessionState;
+use crate::session::db_handler::{DbHandler, DbResponse};
+use crate::types::SchemaTypeMapper;
+use sqlparser::ast::{Expr, Select, SelectItem};
+use std::collections::HashMap;
+use std::sync::Arc;
+use tracing::debug;
 
 /// Handler for pg_prepared_statements view - shows prepared statements
 pub struct PgPreparedStatementsHandler;
@@ -12,6 +16,7 @@ impl PgPreparedStatementsHandler {
     pub async fn handle_query(
         select: &Select,
         _db: &DbHandler,
+        session: Option<Arc<SessionState>>,
     ) -> Result<DbResponse, PgSqliteError> {
         debug!("Handling pg_prepared_statements query");
 
@@ -23,16 +28,14 @@ impl PgPreparedStatementsHandler {
             "parameter_types".to_string(),
             "result_types".to_string(),
             "from_sql".to_string(),
-            "executions".to_string(),
-            "last_execution_time".to_string(),
-            "total_time".to_string(),
-            "rows".to_string(),
+            "generic_plans".to_string(),
+            "custom_plans".to_string(),
         ];
 
         let selected_columns = Self::get_selected_columns(&select.projection, &all_columns);
 
         // Get prepared statements (empty for now - would need session state tracking)
-        let statements = Self::get_prepared_statements();
+        let statements = Self::get_prepared_statements(session).await;
 
         // Apply WHERE clause filtering if present
         let filtered_statements = if let Some(where_clause) = &select.selection {
@@ -75,7 +78,10 @@ impl PgPreparedStatementsHandler {
                         selected.push(col_name);
                     }
                 }
-                SelectItem::ExprWithAlias { expr: Expr::Identifier(ident), alias } => {
+                SelectItem::ExprWithAlias {
+                    expr: Expr::Identifier(ident),
+                    alias,
+                } => {
                     let col_name = ident.value.to_lowercase();
                     if all_columns.contains(&col_name) {
                         selected.push(alias.value.clone());
@@ -92,10 +98,89 @@ impl PgPreparedStatementsHandler {
         selected
     }
 
-    fn get_prepared_statements() -> Vec<HashMap<String, Vec<u8>>> {
-        // Return empty - in a full implementation, this would track
-        // prepared statements from the session state
-        vec![]
+    async fn get_prepared_statements(
+        session: Option<Arc<SessionState>>,
+    ) -> Vec<HashMap<String, Vec<u8>>> {
+        let Some(session) = session else {
+            return vec![];
+        };
+
+        let statements = session.prepared_statements.read().await;
+        let statement_meta = session.prepared_statement_meta.read().await;
+        let mut rows = Vec::new();
+
+        for (name, stmt) in statements.iter() {
+            // Hide unnamed extended-protocol statements from SQL catalog probes.
+            if name.is_empty() {
+                continue;
+            }
+
+            let mut row = HashMap::new();
+            row.insert("name".to_string(), name.as_bytes().to_vec());
+            row.insert("statement".to_string(), stmt.query.as_bytes().to_vec());
+            let meta = statement_meta.get(name);
+            row.insert(
+                "prepare_time".to_string(),
+                meta.map(|m| format_timestamptz(m.prepare_time))
+                    .unwrap_or_else(|| "1970-01-01 00:00:00+00".to_string())
+                    .into_bytes(),
+            );
+            row.insert(
+                "parameter_types".to_string(),
+                Self::format_regtype_array(&stmt.param_types).into_bytes(),
+            );
+            row.insert("result_types".to_string(), b"{}".to_vec());
+            row.insert(
+                "from_sql".to_string(),
+                meta.map(|m| if m.from_sql { b"t".to_vec() } else { b"f".to_vec() })
+                    .unwrap_or_else(|| b"f".to_vec()),
+            );
+            row.insert(
+                "generic_plans".to_string(),
+                meta.map(|m| m.generic_plans.to_string().into_bytes())
+                    .unwrap_or_else(|| b"0".to_vec()),
+            );
+            row.insert(
+                "custom_plans".to_string(),
+                meta.map(|m| m.custom_plans.to_string().into_bytes())
+                    .unwrap_or_else(|| b"0".to_vec()),
+            );
+            rows.push(row);
+        }
+
+        rows.sort_by(|a, b| {
+            a.get("name")
+                .unwrap_or(&Vec::new())
+                .cmp(b.get("name").unwrap_or(&Vec::new()))
+        });
+        rows
+    }
+
+    fn format_regtype_array(param_types: &[i32]) -> String {
+        if param_types.is_empty() {
+            return "{}".to_string();
+        }
+
+        let values: Vec<String> = param_types
+            .iter()
+            .map(|oid| SchemaTypeMapper::pg_oid_to_type_name(*oid))
+            .map(Self::escape_array_item)
+            .collect();
+        format!("{{{}}}", values.join(","))
+    }
+
+    fn escape_array_item(item: &str) -> String {
+        if item.contains(' ')
+            || item.contains(',')
+            || item.contains('"')
+            || item.contains('\\')
+            || item.contains('{')
+            || item.contains('}')
+        {
+            format!("\"{}\"", item.replace('\\', "\\\\").replace('"', "\\\""))
+        } else {
+            item.to_string()
+        }
     }
 
     fn apply_where_filter(

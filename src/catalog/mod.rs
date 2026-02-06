@@ -19,6 +19,7 @@ pub mod pg_prepared_statements;
 pub mod pg_prepared_xacts;
 pub mod pg_cursors;
 pub mod system_functions;
+pub mod utils;
 pub mod where_evaluator;
 pub mod constraint_populator;
 pub mod column_metadata;

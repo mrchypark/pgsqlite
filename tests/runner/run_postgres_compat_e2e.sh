@@ -13,6 +13,15 @@ cleanup() {
   docker volume rm "${VOLUME_NAME}" >/dev/null 2>&1 || true
 }
 
+expect_output_contains() {
+  local output="$1"
+  local expected="$2"
+  if [[ "${output}" != *"${expected}"* ]]; then
+    echo "[e2e] Expected output to contain '${expected}', got: ${output}" >&2
+    exit 1
+  fi
+}
+
 trap cleanup EXIT
 
 echo "[e2e] Building image: ${IMAGE_NAME}"
@@ -47,11 +56,17 @@ docker run --rm -e PGPASSWORD=postgres postgres:16 psql \
   >/dev/null
 
 echo "[e2e] Text bool: SELECT EXISTS should return t/f"
-docker run --rm -e PGPASSWORD=postgres postgres:16 psql \
-  -h host.docker.internal -p "${HOST_PORT}" -U postgres -d default \
-  -v ON_ERROR_STOP=1 \
-  -tAc "select exists(select 1);" \
-  | grep -qx "t"
+exists_out="$(
+  docker run --rm -e PGPASSWORD=postgres postgres:16 psql \
+    -h host.docker.internal -p "${HOST_PORT}" -U postgres -d default \
+    -v ON_ERROR_STOP=1 \
+    -tAc "select exists(select 1);"
+)"
+exists_out="$(echo "${exists_out}" | tr -d '\r\n')"
+if [[ "${exists_out}" != "t" ]]; then
+  echo "[e2e] Expected SELECT EXISTS output to be 't', got: ${exists_out}" >&2
+  exit 1
+fi
 
 echo "[e2e] Schema: create schema foo and verify reflected"
 docker run --rm -e PGPASSWORD=postgres postgres:16 psql \
@@ -60,39 +75,49 @@ docker run --rm -e PGPASSWORD=postgres postgres:16 psql \
   -c "create schema foo;" \
   >/dev/null
 
-docker run --rm -e PGPASSWORD=postgres postgres:16 psql \
-  -h host.docker.internal -p "${HOST_PORT}" -U postgres -d default \
-  -v ON_ERROR_STOP=1 \
-  -c "select schema_name from information_schema.schemata where schema_name = 'foo';" \
-  | grep -q "foo"
+foo_schema_out="$(
+  docker run --rm -e PGPASSWORD=postgres postgres:16 psql \
+    -h host.docker.internal -p "${HOST_PORT}" -U postgres -d default \
+    -v ON_ERROR_STOP=1 \
+    -tAc "select schema_name from information_schema.schemata where schema_name = 'foo';"
+)"
+expect_output_contains "${foo_schema_out}" "foo"
 
 echo "[e2e] Session: SET search_path=foo; current_schema() should return foo"
-docker run --rm -e PGPASSWORD=postgres postgres:16 psql \
-  -h host.docker.internal -p "${HOST_PORT}" -U postgres -d default \
-  -v ON_ERROR_STOP=1 \
-  -c "set search_path=foo; select current_schema();" \
-  | grep -q "foo"
+current_schema_out="$(
+  docker run --rm -e PGPASSWORD=postgres postgres:16 psql \
+    -h host.docker.internal -p "${HOST_PORT}" -U postgres -d default \
+    -v ON_ERROR_STOP=1 \
+    -tAc "set search_path=foo; select current_schema();"
+)"
+expect_output_contains "${current_schema_out}" "foo"
 
 echo "[e2e] Session: SHOW search_path should return foo"
-docker run --rm -e PGPASSWORD=postgres postgres:16 psql \
-  -h host.docker.internal -p "${HOST_PORT}" -U postgres -d default \
-  -v ON_ERROR_STOP=1 \
-  -c "set search_path=foo; show search_path;" \
-  | grep -q "foo"
+show_search_path_out="$(
+  docker run --rm -e PGPASSWORD=postgres postgres:16 psql \
+    -h host.docker.internal -p "${HOST_PORT}" -U postgres -d default \
+    -v ON_ERROR_STOP=1 \
+    -tAc "set search_path=foo; show search_path;"
+)"
+expect_output_contains "${show_search_path_out}" "foo"
 
 echo "[e2e] Session: current_setting('search_path') should return foo"
-docker run --rm -e PGPASSWORD=postgres postgres:16 psql \
-  -h host.docker.internal -p "${HOST_PORT}" -U postgres -d default \
-  -v ON_ERROR_STOP=1 \
-  -c "set search_path=foo; select current_setting('search_path');" \
-  | grep -q "foo"
+current_setting_out="$(
+  docker run --rm -e PGPASSWORD=postgres postgres:16 psql \
+    -h host.docker.internal -p "${HOST_PORT}" -U postgres -d default \
+    -v ON_ERROR_STOP=1 \
+    -tAc "set search_path=foo; select current_setting('search_path');"
+)"
+expect_output_contains "${current_setting_out}" "foo"
 
 echo "[e2e] Compatibility: SELECT * FROM current_schema() should return foo"
-docker run --rm -e PGPASSWORD=postgres postgres:16 psql \
-  -h host.docker.internal -p "${HOST_PORT}" -U postgres -d default \
-  -v ON_ERROR_STOP=1 \
-  -c "set search_path=foo; select * from current_schema();" \
-  | grep -q "foo"
+current_schema_star_out="$(
+  docker run --rm -e PGPASSWORD=postgres postgres:16 psql \
+    -h host.docker.internal -p "${HOST_PORT}" -U postgres -d default \
+    -v ON_ERROR_STOP=1 \
+    -tAc "set search_path=foo; select * from current_schema();"
+)"
+expect_output_contains "${current_schema_star_out}" "foo"
 
 echo "[e2e] Session: set_config('search_path','bar',false) should affect current_schema()"
 docker run --rm -e PGPASSWORD=postgres postgres:16 psql \
@@ -101,23 +126,29 @@ docker run --rm -e PGPASSWORD=postgres postgres:16 psql \
   -c "create schema bar;" \
   >/dev/null
 
-docker run --rm -e PGPASSWORD=postgres postgres:16 psql \
-  -h host.docker.internal -p "${HOST_PORT}" -U postgres -d default \
-  -v ON_ERROR_STOP=1 \
-  -c "select set_config('search_path','bar',false); select current_schema();" \
-  | grep -q "bar"
+set_config_schema_out="$(
+  docker run --rm -e PGPASSWORD=postgres postgres:16 psql \
+    -h host.docker.internal -p "${HOST_PORT}" -U postgres -d default \
+    -v ON_ERROR_STOP=1 \
+    -tAc "select set_config('search_path','bar',false); select current_schema();"
+)"
+expect_output_contains "${set_config_schema_out}" "bar"
 
-docker run --rm -e PGPASSWORD=postgres postgres:16 psql \
-  -h host.docker.internal -p "${HOST_PORT}" -U postgres -d default \
-  -v ON_ERROR_STOP=1 \
-  -c "select set_config('search_path','bar',false); show search_path;" \
-  | grep -q "bar"
+set_config_show_out="$(
+  docker run --rm -e PGPASSWORD=postgres postgres:16 psql \
+    -h host.docker.internal -p "${HOST_PORT}" -U postgres -d default \
+    -v ON_ERROR_STOP=1 \
+    -tAc "select set_config('search_path','bar',false); show search_path;"
+)"
+expect_output_contains "${set_config_show_out}" "bar"
 
 echo "[e2e] SQL PREPARE/EXECUTE/DEALLOCATE (simple query)"
-docker run --rm -e PGPASSWORD=postgres postgres:16 psql \
-  -h host.docker.internal -p "${HOST_PORT}" -U postgres -d default \
-  -v ON_ERROR_STOP=1 \
-  -c "prepare p1(int4) as select \$1::int4 + 1; execute p1(41); deallocate p1;" \
-  | grep -q "42"
+prepare_out="$(
+  docker run --rm -e PGPASSWORD=postgres postgres:16 psql \
+    -h host.docker.internal -p "${HOST_PORT}" -U postgres -d default \
+    -v ON_ERROR_STOP=1 \
+    -tAc "prepare p1(int4) as select \$1::int4 + 1; execute p1(41); deallocate p1;"
+)"
+expect_output_contains "${prepare_out}" "42"
 
 echo "[e2e] OK"
