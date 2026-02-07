@@ -12,9 +12,11 @@ static CREATE_TABLE_REGEX: Lazy<Result<Regex, regex::Error>> = Lazy::new(|| {
     Regex::new(r#"(?is)CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(?:"([^"]+)"|(\w+))\s*\((.*)\)"#)
 });
 static PRIMARY_KEY_CONSTRAINT_REGEX: Lazy<Regex> = Lazy::new(|| {
-    // Match both `PRIMARY KEY (...)` and `CONSTRAINT name PRIMARY KEY (...)`
-    // Allow trailing line comments after the constraint definition.
-    Regex::new(r#"(?is)^(?:CONSTRAINT\s+(?:"[^"]+"|\S+)\s+)?PRIMARY\s+KEY\s*\(([^)]+)\)\s*(?:--.*)?$"#)
+    // Match both `PRIMARY KEY (...)` and `CONSTRAINT name PRIMARY KEY (...)`.
+    // Also allow PostgreSQL constraint attributes after the key list.
+    Regex::new(
+        r#"(?is)^(?:CONSTRAINT\s+(?:"[^"]+"|\S+)\s+)?PRIMARY\s+KEY\s*\(([^)]+)\)(?:\s+(?:NOT\s+)?DEFERRABLE)?(?:\s+INITIALLY\s+(?:DEFERRED|IMMEDIATE))?\s*(?:--.*)?$"#
+    )
         .expect("PRIMARY_KEY_CONSTRAINT_REGEX must compile")
 });
 
@@ -858,6 +860,23 @@ mod tests {
 
         assert!(upper_sql.contains("INTEGER PRIMARY KEY AUTOINCREMENT"));
         assert!(!upper_sql.contains("CONSTRAINT \"PK_USERS_ID\" PRIMARY KEY"));
+    }
+
+    #[test]
+    fn test_drops_constraint_primary_key_for_serial_column_with_deferrable() {
+        let sql = r#"CREATE TABLE users (
+            id SERIAL NOT NULL,
+            CONSTRAINT pk_users PRIMARY KEY (id) DEFERRABLE INITIALLY DEFERRED
+        )"#;
+
+        let result = CreateTableTranslator::translate_with_connection_full(sql, None).unwrap();
+        let upper_sql = result.sql.to_uppercase();
+        let conn = Connection::open_in_memory().unwrap();
+
+        assert!(upper_sql.contains("ID INTEGER PRIMARY KEY AUTOINCREMENT"));
+        assert!(!upper_sql.contains("CONSTRAINT PK_USERS PRIMARY KEY"));
+        assert!(!upper_sql.contains("DEFERRABLE"));
+        conn.execute(&result.sql, []).unwrap();
     }
 
     #[test]
