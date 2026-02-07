@@ -207,9 +207,7 @@ impl CreateTableTranslator {
                     }
 
                     // Only remove single-column PK constraints that duplicate SERIAL's implicit PK.
-                    return serial_columns
-                        .iter()
-                        .any(|serial_col| serial_col.eq_ignore_ascii_case(&pk_column));
+                    return serial_columns.contains(&pk_column);
                 }
         }
         false
@@ -225,7 +223,8 @@ impl CreateTableTranslator {
             return unquoted.replace("\"\"", "\"");
         }
 
-        trimmed.to_string()
+        // PostgreSQL folds unquoted identifiers to lowercase.
+        trimmed.to_ascii_lowercase()
     }
     
     fn translate_column_definition(
@@ -884,5 +883,32 @@ mod tests {
             CreateTableTranslator::normalize_identifier(" plain_id "),
             "plain_id"
         );
+        assert_eq!(
+            CreateTableTranslator::normalize_identifier(" MixedCase "),
+            "mixedcase"
+        );
+    }
+
+    #[test]
+    fn test_identifier_case_handling_matches_postgres_rules() {
+        let mut serial_columns = std::collections::HashSet::new();
+        serial_columns.insert(CreateTableTranslator::normalize_identifier("\"ID\""));
+        serial_columns.insert(CreateTableTranslator::normalize_identifier("tenant_id"));
+
+        // Quoted identifiers are case-sensitive.
+        assert!(!CreateTableTranslator::is_redundant_primary_key(
+            r#"PRIMARY KEY ("id")"#,
+            &serial_columns
+        ));
+        assert!(CreateTableTranslator::is_redundant_primary_key(
+            r#"PRIMARY KEY ("ID")"#,
+            &serial_columns
+        ));
+
+        // Unquoted identifiers are folded to lowercase.
+        assert!(CreateTableTranslator::is_redundant_primary_key(
+            "PRIMARY KEY (TENANT_ID)",
+            &serial_columns
+        ));
     }
 }
