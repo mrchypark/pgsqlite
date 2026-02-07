@@ -217,11 +217,15 @@ impl CreateTableTranslator {
 
     fn normalize_identifier(identifier: &str) -> String {
         let trimmed = identifier.trim();
-        let unquoted = trimmed
+        if let Some(unquoted) = trimmed
             .strip_prefix('"')
             .and_then(|s| s.strip_suffix('"'))
-            .unwrap_or(trimmed);
-        unquoted.to_string()
+        {
+            // SQL quoted identifiers escape `"` as `""`.
+            return unquoted.replace("\"\"", "\"");
+        }
+
+        trimmed.to_string()
     }
     
     fn translate_column_definition(
@@ -868,5 +872,17 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
 
         conn.execute(&result.sql, []).unwrap();
+    }
+
+    #[test]
+    fn test_normalize_identifier_unescapes_quoted_identifier() {
+        assert_eq!(
+            CreateTableTranslator::normalize_identifier(r#""a""b""#),
+            "a\"b"
+        );
+        assert_eq!(
+            CreateTableTranslator::normalize_identifier(" plain_id "),
+            "plain_id"
+        );
     }
 }
