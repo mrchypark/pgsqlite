@@ -13,7 +13,8 @@ static CREATE_TABLE_REGEX: Lazy<Result<Regex, regex::Error>> = Lazy::new(|| {
 });
 static PRIMARY_KEY_CONSTRAINT_REGEX: Lazy<Regex> = Lazy::new(|| {
     // Match both `PRIMARY KEY (...)` and `CONSTRAINT name PRIMARY KEY (...)`
-    Regex::new(r#"(?is)^(?:CONSTRAINT\s+(?:"[^"]+"|\S+)\s+)?PRIMARY\s+KEY\s*\(([^)]+)\)\s*$"#)
+    // Allow trailing line comments after the constraint definition.
+    Regex::new(r#"(?is)^(?:CONSTRAINT\s+(?:"[^"]+"|\S+)\s+)?PRIMARY\s+KEY\s*\(([^)]+)\)\s*(?:--.*)?$"#)
         .expect("PRIMARY_KEY_CONSTRAINT_REGEX must compile")
 });
 
@@ -220,11 +221,11 @@ impl CreateTableTranslator {
             .and_then(|s| s.strip_suffix('"'))
         {
             // SQL quoted identifiers escape `"` as `""`.
-            return unquoted.replace("\"\"", "\"");
+            unquoted.replace("\"\"", "\"")
+        } else {
+            // PostgreSQL folds unquoted identifiers to lowercase.
+            trimmed.to_ascii_lowercase()
         }
-
-        // PostgreSQL folds unquoted identifiers to lowercase.
-        trimmed.to_ascii_lowercase()
     }
     
     fn translate_column_definition(
@@ -842,6 +843,21 @@ mod tests {
         assert!(upper_sql.contains("INTEGER PRIMARY KEY AUTOINCREMENT"));
         assert!(!upper_sql.contains("CONSTRAINT \"PK_USERS_ID\" PRIMARY KEY"));
         assert!(!upper_sql.contains("PRIMARY KEY (\"ID\")"));
+    }
+
+    #[test]
+    fn test_drops_constraint_primary_key_for_serial_column_with_comment() {
+        let sql = r#"CREATE TABLE "users" (
+            "id" SERIAL NOT NULL,
+            "email" VARCHAR(255) NOT NULL,
+            CONSTRAINT "PK_users_id" PRIMARY KEY ("id") -- comment
+        )"#;
+
+        let result = CreateTableTranslator::translate_with_connection_full(sql, None).unwrap();
+        let upper_sql = result.sql.to_uppercase();
+
+        assert!(upper_sql.contains("INTEGER PRIMARY KEY AUTOINCREMENT"));
+        assert!(!upper_sql.contains("CONSTRAINT \"PK_USERS_ID\" PRIMARY KEY"));
     }
 
     #[test]
