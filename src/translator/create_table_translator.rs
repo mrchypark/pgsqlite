@@ -11,9 +11,10 @@ static CREATE_TABLE_REGEX: Lazy<Result<Regex, regex::Error>> = Lazy::new(|| {
     // Updated regex to handle quoted table names like "django_migrations"
     Regex::new(r#"(?is)CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(?:"([^"]+)"|(\w+))\s*\((.*)\)"#)
 });
-static PRIMARY_KEY_CONSTRAINT_REGEX: Lazy<Result<Regex, regex::Error>> = Lazy::new(|| {
+static PRIMARY_KEY_CONSTRAINT_REGEX: Lazy<Regex> = Lazy::new(|| {
     // Match both `PRIMARY KEY (...)` and `CONSTRAINT name PRIMARY KEY (...)`
     Regex::new(r#"(?is)^(?:CONSTRAINT\s+(?:"[^"]+"|\S+)\s+)?PRIMARY\s+KEY\s*\(([^)]+)\)\s*$"#)
+        .expect("PRIMARY_KEY_CONSTRAINT_REGEX must compile")
 });
 
 #[derive(Debug)]
@@ -191,12 +192,7 @@ impl CreateTableTranslator {
     
     /// Check if this is a PRIMARY KEY constraint that references a SERIAL column
     fn is_redundant_primary_key(column_def: &str, serial_columns: &std::collections::HashSet<String>) -> bool {
-        let regex = match PRIMARY_KEY_CONSTRAINT_REGEX.as_ref() {
-            Ok(regex) => regex,
-            Err(_) => return false,
-        };
-
-        if let Some(captures) = regex.captures(column_def.trim())
+        if let Some(captures) = PRIMARY_KEY_CONSTRAINT_REGEX.captures(column_def.trim())
             && let Some(column_list_match) = captures.get(1) {
                 let pk_columns: Vec<String> = column_list_match
                     .as_str()
