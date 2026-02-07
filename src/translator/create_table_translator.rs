@@ -194,19 +194,22 @@ impl CreateTableTranslator {
     fn is_redundant_primary_key(column_def: &str, serial_columns: &std::collections::HashSet<String>) -> bool {
         if let Some(captures) = PRIMARY_KEY_CONSTRAINT_REGEX.captures(column_def.trim())
             && let Some(column_list_match) = captures.get(1) {
-                let pk_columns: Vec<String> = column_list_match
+                let mut pk_columns = column_list_match
                     .as_str()
                     .split(',')
                     .map(Self::normalize_identifier)
-                    .filter(|column| !column.is_empty())
-                    .collect();
+                    .filter(|column| !column.is_empty());
 
-                // Only remove single-column PK constraints that duplicate SERIAL's implicit PK
-                if pk_columns.len() == 1 {
-                    let pk_column = &pk_columns[0];
+                if let Some(pk_column) = pk_columns.next() {
+                    // Composite PK constraints are never redundant with SERIAL's implicit PK.
+                    if pk_columns.next().is_some() {
+                        return false;
+                    }
+
+                    // Only remove single-column PK constraints that duplicate SERIAL's implicit PK.
                     return serial_columns
                         .iter()
-                        .any(|serial_col| serial_col.eq_ignore_ascii_case(pk_column));
+                        .any(|serial_col| serial_col.eq_ignore_ascii_case(&pk_column));
                 }
         }
         false
