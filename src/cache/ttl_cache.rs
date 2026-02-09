@@ -1,10 +1,10 @@
+use crate::protocol::{MemoryPressure, global_memory_monitor};
+use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::hash::Hash;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use parking_lot::RwLock;
 use tracing::{debug, info};
-use crate::protocol::{MemoryPressure, global_memory_monitor};
 
 /// Configuration for TTL-based cache
 #[derive(Debug, Clone)]
@@ -32,7 +32,7 @@ impl Default for TtlCacheConfig {
             max_entries: 10000,
             cleanup_interval: Duration::from_secs(60), // 1 minute
             memory_pressure_enabled: true,
-            memory_pressure_threshold: 64, // 64MB
+            memory_pressure_threshold: 64,      // 64MB
             pressure_eviction_percentage: 0.25, // 25%
             enable_lru: true,
         }
@@ -44,33 +44,38 @@ impl TtlCacheConfig {
         let mut config = Self::default();
 
         if let Ok(val) = std::env::var("PGSQLITE_CACHE_DEFAULT_TTL_SECS")
-            && let Ok(ttl_secs) = val.parse::<u64>() {
-                config.default_ttl = Duration::from_secs(ttl_secs);
-            }
+            && let Ok(ttl_secs) = val.parse::<u64>()
+        {
+            config.default_ttl = Duration::from_secs(ttl_secs);
+        }
 
         if let Ok(val) = std::env::var("PGSQLITE_CACHE_MAX_ENTRIES")
-            && let Ok(max_entries) = val.parse::<usize>() {
-                config.max_entries = max_entries;
-            }
+            && let Ok(max_entries) = val.parse::<usize>()
+        {
+            config.max_entries = max_entries;
+        }
 
         if let Ok(val) = std::env::var("PGSQLITE_CACHE_CLEANUP_INTERVAL_SECS")
-            && let Ok(interval_secs) = val.parse::<u64>() {
-                config.cleanup_interval = Duration::from_secs(interval_secs);
-            }
+            && let Ok(interval_secs) = val.parse::<u64>()
+        {
+            config.cleanup_interval = Duration::from_secs(interval_secs);
+        }
 
         if let Ok(val) = std::env::var("PGSQLITE_CACHE_MEMORY_PRESSURE_ENABLED") {
             config.memory_pressure_enabled = val == "1" || val.to_lowercase() == "true";
         }
 
         if let Ok(val) = std::env::var("PGSQLITE_CACHE_MEMORY_PRESSURE_THRESHOLD_MB")
-            && let Ok(threshold) = val.parse::<usize>() {
-                config.memory_pressure_threshold = threshold;
-            }
+            && let Ok(threshold) = val.parse::<usize>()
+        {
+            config.memory_pressure_threshold = threshold;
+        }
 
         if let Ok(val) = std::env::var("PGSQLITE_CACHE_PRESSURE_EVICTION_PERCENTAGE")
-            && let Ok(percentage) = val.parse::<f32>() {
-                config.pressure_eviction_percentage = percentage.clamp(0.0, 1.0);
-            }
+            && let Ok(percentage) = val.parse::<f32>()
+        {
+            config.pressure_eviction_percentage = percentage.clamp(0.0, 1.0);
+        }
 
         if let Ok(val) = std::env::var("PGSQLITE_CACHE_ENABLE_LRU") {
             config.enable_lru = val == "1" || val.to_lowercase() == "true";
@@ -250,7 +255,8 @@ where
             global_memory_monitor().record_query_deallocation(old_entry.size_bytes as u64);
 
             // Update size tracking for replacement
-            stats.total_size_bytes = stats.total_size_bytes
+            stats.total_size_bytes = stats
+                .total_size_bytes
                 .saturating_sub(old_entry.size_bytes)
                 .saturating_add(size_bytes);
         } else {
@@ -334,8 +340,10 @@ where
             stats.expired_evictions += removed_count as u64;
             stats.cleanup_runs += 1;
 
-            debug!("Cache cleanup: removed {} expired entries, freed {} bytes",
-                   removed_count, removed_size);
+            debug!(
+                "Cache cleanup: removed {} expired entries, freed {} bytes",
+                removed_count, removed_size
+            );
 
             // Unregister memory usage
             if removed_size > 0 {
@@ -364,8 +372,10 @@ where
         let size_threshold = self.config.memory_pressure_threshold * 1024 * 1024; // Convert MB to bytes
 
         if current_size > size_threshold && self.config.memory_pressure_enabled {
-            debug!("Cache size ({} bytes) exceeds threshold ({} bytes), forcing cleanup",
-                   current_size, size_threshold);
+            debug!(
+                "Cache size ({} bytes) exceeds threshold ({} bytes), forcing cleanup",
+                current_size, size_threshold
+            );
             self.cleanup();
 
             // If still too large after cleanup, perform emergency eviction
@@ -404,12 +414,16 @@ where
             return;
         }
 
-        let target_evictions = (entries.len() as f32 * self.config.pressure_eviction_percentage) as usize;
+        let target_evictions =
+            (entries.len() as f32 * self.config.pressure_eviction_percentage) as usize;
         if target_evictions == 0 {
             return;
         }
 
-        info!("Memory pressure detected, evicting {} cache entries", target_evictions);
+        info!(
+            "Memory pressure detected, evicting {} cache entries",
+            target_evictions
+        );
 
         // Collect entries sorted by eviction priority (oldest first, least accessed)
         let mut entry_priorities: Vec<(K, f64)> = entries
@@ -444,8 +458,10 @@ where
             stats.pressure_evictions += evicted_count as u64;
             stats.evictions += evicted_count as u64;
 
-            info!("Memory pressure eviction: removed {} entries, freed {} bytes",
-                  evicted_count, evicted_size);
+            info!(
+                "Memory pressure eviction: removed {} entries, freed {} bytes",
+                evicted_count, evicted_size
+            );
 
             // Unregister memory usage
             if evicted_size > 0 {
@@ -469,7 +485,10 @@ where
             return;
         }
 
-        info!("Emergency memory eviction: cache size too large, evicting {} entries", target_evictions);
+        info!(
+            "Emergency memory eviction: cache size too large, evicting {} entries",
+            target_evictions
+        );
 
         // Collect all entries with simple priority (oldest first)
         let mut entry_keys: Vec<(K, Instant)> = entries
@@ -495,8 +514,10 @@ where
             stats.total_size_bytes = stats.total_size_bytes.saturating_sub(evicted_size);
             stats.evictions += evicted_count as u64;
 
-            info!("Emergency eviction completed: removed {} entries, freed {} bytes",
-                  evicted_count, evicted_size);
+            info!(
+                "Emergency eviction completed: removed {} entries, freed {} bytes",
+                evicted_count, evicted_size
+            );
 
             // Unregister memory usage
             if evicted_size > 0 {
@@ -506,11 +527,7 @@ where
     }
 
     /// Evict least recently used entry
-    fn evict_lru_entry(
-        &self,
-        entries: &mut HashMap<K, CacheEntry<V>>,
-        stats: &mut CacheStats,
-    ) {
+    fn evict_lru_entry(&self, entries: &mut HashMap<K, CacheEntry<V>>, stats: &mut CacheStats) {
         if entries.is_empty() {
             return;
         }
@@ -530,13 +547,17 @@ where
         };
 
         if let Some(key) = lru_key
-            && let Some(entry) = entries.remove(&key) {
+            && let Some(entry) = entries.remove(&key)
+        {
             stats.total_entries = entries.len();
             stats.total_size_bytes = stats.total_size_bytes.saturating_sub(entry.size_bytes);
             stats.lru_evictions += 1;
             stats.evictions += 1;
 
-            debug!("LRU eviction: removed entry, freed {} bytes", entry.size_bytes);
+            debug!(
+                "LRU eviction: removed entry, freed {} bytes",
+                entry.size_bytes
+            );
 
             // Unregister memory usage
             global_memory_monitor().record_query_deallocation(entry.size_bytes as u64);
@@ -596,8 +617,10 @@ where
         let count_mismatch = actual_count != stats.total_entries;
 
         if size_mismatch || count_mismatch {
-            debug!("Memory tracking inconsistency detected - Size: actual={}, tracked={}, Count: actual={}, tracked={}",
-                   actual_size, stats.total_size_bytes, actual_count, stats.total_entries);
+            debug!(
+                "Memory tracking inconsistency detected - Size: actual={}, tracked={}, Count: actual={}, tracked={}",
+                actual_size, stats.total_size_bytes, actual_count, stats.total_entries
+            );
 
             drop(stats);
             drop(entries);
@@ -701,7 +724,11 @@ mod tests {
         let cache = TtlCache::new();
 
         // Insert with short TTL
-        cache.insert_with_ttl("key1".to_string(), "value1".to_string(), Duration::from_millis(50));
+        cache.insert_with_ttl(
+            "key1".to_string(),
+            "value1".to_string(),
+            Duration::from_millis(50),
+        );
 
         // Should be available immediately
         assert_eq!(cache.get(&"key1".to_string()), Some("value1".to_string()));
@@ -751,8 +778,16 @@ mod tests {
         let cache = TtlCache::new();
 
         // Insert entries with different TTLs
-        cache.insert_with_ttl("key1".to_string(), "value1".to_string(), Duration::from_millis(50));
-        cache.insert_with_ttl("key2".to_string(), "value2".to_string(), Duration::from_secs(60));
+        cache.insert_with_ttl(
+            "key1".to_string(),
+            "value1".to_string(),
+            Duration::from_millis(50),
+        );
+        cache.insert_with_ttl(
+            "key2".to_string(),
+            "value2".to_string(),
+            Duration::from_secs(60),
+        );
 
         assert_eq!(cache.len(), 2);
 
@@ -788,7 +823,11 @@ mod tests {
     fn test_ttl_extension() {
         let cache = TtlCache::new();
 
-        cache.insert_with_ttl("key1".to_string(), "value1".to_string(), Duration::from_millis(100));
+        cache.insert_with_ttl(
+            "key1".to_string(),
+            "value1".to_string(),
+            Duration::from_millis(100),
+        );
 
         // Extend TTL
         assert!(cache.extend_ttl(&"key1".to_string(), Duration::from_millis(100)));
@@ -805,8 +844,16 @@ mod tests {
     fn test_entries_expiring_within() {
         let cache = TtlCache::new();
 
-        cache.insert_with_ttl("key1".to_string(), "value1".to_string(), Duration::from_millis(50));
-        cache.insert_with_ttl("key2".to_string(), "value2".to_string(), Duration::from_secs(60));
+        cache.insert_with_ttl(
+            "key1".to_string(),
+            "value1".to_string(),
+            Duration::from_millis(50),
+        );
+        cache.insert_with_ttl(
+            "key2".to_string(),
+            "value2".to_string(),
+            Duration::from_secs(60),
+        );
 
         let expiring = cache.entries_expiring_within(Duration::from_millis(100));
         assert_eq!(expiring.len(), 1);
@@ -839,6 +886,7 @@ mod tests {
 
     #[test]
     fn test_config_from_env() {
+        let _guard = crate::utils::test_env::lock_env();
         unsafe {
             std::env::set_var("PGSQLITE_CACHE_DEFAULT_TTL_SECS", "600");
             std::env::set_var("PGSQLITE_CACHE_MAX_ENTRIES", "5000");
@@ -865,15 +913,30 @@ mod tests {
         let cache = TtlCache::new();
 
         // Insert entries with explicit size
-        cache.insert_with_ttl_and_size("key1".to_string(), "value1".to_string(), Duration::from_secs(1), 100);
-        cache.insert_with_ttl_and_size("key2".to_string(), "value2".to_string(), Duration::from_secs(1), 200);
+        cache.insert_with_ttl_and_size(
+            "key1".to_string(),
+            "value1".to_string(),
+            Duration::from_secs(1),
+            100,
+        );
+        cache.insert_with_ttl_and_size(
+            "key2".to_string(),
+            "value2".to_string(),
+            Duration::from_secs(1),
+            200,
+        );
 
         let initial_stats = cache.stats();
         assert_eq!(initial_stats.total_size_bytes, 300);
         assert_eq!(initial_stats.total_entries, 2);
 
         // Replace entry (should deallocate old one)
-        cache.insert_with_ttl_and_size("key1".to_string(), "new_value1".to_string(), Duration::from_secs(1), 150);
+        cache.insert_with_ttl_and_size(
+            "key1".to_string(),
+            "new_value1".to_string(),
+            Duration::from_secs(1),
+            150,
+        );
 
         let stats_after_replace = cache.stats();
         assert_eq!(stats_after_replace.total_size_bytes, 350); // 200 + 150
@@ -907,7 +970,7 @@ mod tests {
                 format!("key{}", i),
                 format!("value{}", i),
                 Duration::from_secs(60),
-                200_000 // 200KB each
+                200_000, // 200KB each
             );
         }
 
