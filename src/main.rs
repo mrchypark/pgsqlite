@@ -393,6 +393,22 @@ where
     let codec = PostgresCodec::new();
     let mut framed = Framed::new(stream, codec);
 
+    async fn send_fatal<S>(
+        framed: &mut Framed<S, PostgresCodec>,
+        code: &str,
+        message: String,
+    ) -> Result<()>
+    where
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send,
+    {
+        let err = ErrorResponse::new("FATAL".to_string(), code.to_string(), message);
+        framed
+            .send(BackendMessage::ErrorResponse(Box::new(err)))
+            .await?;
+        framed.flush().await?;
+        Ok(())
+    }
+
     // Wait for startup message
     let startup = match framed.next().await {
         Some(Ok(FrontendMessage::StartupMessage(msg))) => msg,
@@ -468,7 +484,21 @@ where
     };
 
     let db_handler = get_or_create_handler(&db_path, &config)
-        .map_err(|e| anyhow::anyhow!("Failed to get database handler: {}", e))?;
+        .map_err(|e| anyhow::anyhow!("Failed to get database handler: {}", e));
+
+    let db_handler = match db_handler {
+        Ok(handler) => handler,
+        Err(e) => {
+            error!("Failed to get database handler: {e}");
+            send_fatal(
+                &mut framed,
+                "08006",
+                format!("Failed to initialize database handler: {e}"),
+            )
+            .await?;
+            return Ok(());
+        }
+    };
 
     // Set the database handler for this session for proper lifecycle management
     session.set_db_handler(db_handler.clone()).await;
@@ -476,10 +506,13 @@ where
     // Create a connection for this session
     if let Err(e) = session.initialize_connection().await {
         error!("Failed to create session connection: {}", e);
-        return Err(anyhow::anyhow!(
-            "Failed to create session connection: {}",
-            e
-        ));
+        send_fatal(
+            &mut framed,
+            "08006",
+            format!("Failed to create session connection: {e}"),
+        )
+        .await?;
+        return Ok(());
     }
 
     // Note: cleanup is now handled by SessionState Drop implementation
