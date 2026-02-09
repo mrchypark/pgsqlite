@@ -254,10 +254,8 @@ impl ValueHandler {
             use std::io::Write;
             let mut bytes = [0u8; 32];
             let mut cursor = std::io::Cursor::new(&mut bytes[..]);
-            write!(&mut cursor, "{real_val}")?;
-            let len = cursor.position() as usize;
-
-            if len <= bytes.len() {
+            if write!(&mut cursor, "{real_val}").is_ok() {
+                let len = cursor.position() as usize;
                 return Ok(Some(MappedValue::SmallText {
                     bytes,
                     len: len as u8,
