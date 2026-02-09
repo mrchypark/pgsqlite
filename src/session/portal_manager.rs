@@ -1,6 +1,6 @@
-use std::collections::HashMap;
-use parking_lot::RwLock;
 use crate::PgSqliteError;
+use parking_lot::RwLock;
+use std::collections::HashMap;
 
 /// Manages portal lifecycle and state for extended query protocol
 pub struct PortalManager {
@@ -46,7 +46,6 @@ pub struct CachedQueryResult {
     pub command_tag: String,
 }
 
-
 impl PortalManager {
     /// Create a new portal manager with specified limits
     pub fn new(max_portals: usize) -> Self {
@@ -58,13 +57,9 @@ impl PortalManager {
     }
 
     /// Create a new portal
-    pub fn create_portal(
-        &self,
-        name: String,
-        portal: super::Portal,
-    ) -> Result<(), PgSqliteError> {
+    pub fn create_portal(&self, name: String, portal: super::Portal) -> Result<(), PgSqliteError> {
         let mut portals = self.portals.write();
-        
+
         // Check portal limit
         if portals.len() >= self.max_portals && !portals.contains_key(&name) {
             // Find and remove least recently used portal
@@ -73,23 +68,26 @@ impl PortalManager {
                 self.execution_state.write().remove(&lru_name);
             }
         }
-        
+
         let managed_portal = ManagedPortal {
             portal,
             created_at: std::time::Instant::now(),
             last_accessed: RwLock::new(std::time::Instant::now()),
         };
-        
+
         portals.insert(name.clone(), managed_portal);
-        
+
         // Initialize execution state
-        self.execution_state.write().insert(name, PortalExecutionState {
-            row_offset: 0,
-            total_rows: None,
-            is_complete: false,
-            cached_result: None,
-        });
-        
+        self.execution_state.write().insert(
+            name,
+            PortalExecutionState {
+                row_offset: 0,
+                total_rows: None,
+                is_complete: false,
+                cached_result: None,
+            },
+        );
+
         Ok(())
     }
 
@@ -124,7 +122,7 @@ impl PortalManager {
         cached_result: Option<CachedQueryResult>,
     ) -> Result<(), PgSqliteError> {
         let mut states = self.execution_state.write();
-        
+
         if let Some(state) = states.get_mut(name) {
             state.row_offset = row_offset;
             state.is_complete = is_complete;
@@ -165,19 +163,19 @@ impl PortalManager {
         let now = std::time::Instant::now();
         let mut portals = self.portals.write();
         let mut states = self.execution_state.write();
-        
+
         let stale_portals: Vec<String> = portals
             .iter()
             .filter(|(_, mp)| now.duration_since(*mp.last_accessed.read()) > max_age)
             .map(|(name, _)| name.clone())
             .collect();
-        
+
         let count = stale_portals.len();
         for name in stale_portals {
             portals.remove(&name);
             states.remove(&name);
         }
-        
+
         count
     }
 
@@ -205,7 +203,7 @@ impl PortalExecutor {
         let state = portal_manager
             .get_execution_state(portal_name)
             .ok_or_else(|| PgSqliteError::Protocol(format!("Unknown portal: {portal_name}")))?;
-        
+
         // If we have cached results, return from cache
         if let Some(cached_result) = &state.cached_result {
             let start_row = state.row_offset;
@@ -215,7 +213,7 @@ impl PortalExecutor {
             } else {
                 std::cmp::min(max_rows as usize, cached_result.rows.len() - start_row)
             };
-            
+
             for i in start_row..(start_row + max_rows_to_send) {
                 if i >= cached_result.rows.len() {
                     break;
@@ -223,10 +221,10 @@ impl PortalExecutor {
                 send_row(cached_result.rows[i].clone())?;
                 rows_sent += 1;
             }
-            
+
             let new_offset = start_row + rows_sent;
             let is_complete = new_offset >= cached_result.rows.len();
-            
+
             // Update execution state
             portal_manager.update_execution_state(
                 portal_name,
@@ -234,12 +232,14 @@ impl PortalExecutor {
                 is_complete,
                 None, // Keep existing cached result
             )?;
-            
+
             Ok((rows_sent, is_complete))
         } else {
             // First execution - need to execute query and cache results
             // This will be implemented when integrating with the main execute flow
-            Err(PgSqliteError::Protocol("Portal execution not yet integrated".to_string()))
+            Err(PgSqliteError::Protocol(
+                "Portal execution not yet integrated".to_string(),
+            ))
         }
     }
 }
@@ -257,7 +257,7 @@ mod tests {
     #[test]
     fn test_portal_lifecycle() {
         let manager = PortalManager::new(10);
-        
+
         // Create a test portal
         let portal = super::super::Portal {
             statement_name: "test_stmt".to_string(),
@@ -268,15 +268,17 @@ mod tests {
             result_formats: vec![],
             inferred_param_types: None,
         };
-        
+
         // Create portal
-        manager.create_portal("test_portal".to_string(), portal.clone()).unwrap();
+        manager
+            .create_portal("test_portal".to_string(), portal.clone())
+            .unwrap();
         assert_eq!(manager.portal_count(), 1);
-        
+
         // Get portal
         let retrieved = manager.get_portal("test_portal").unwrap();
         assert_eq!(retrieved.query, "SELECT 1");
-        
+
         // Close portal
         assert!(manager.close_portal("test_portal"));
         assert_eq!(manager.portal_count(), 0);
@@ -285,7 +287,7 @@ mod tests {
     #[test]
     fn test_portal_limit_enforcement() {
         let manager = PortalManager::new(3);
-        
+
         // Create portals up to limit
         for i in 0..4 {
             let portal = super::super::Portal {
@@ -297,13 +299,15 @@ mod tests {
                 result_formats: vec![],
                 inferred_param_types: None,
             };
-            
-            manager.create_portal(format!("portal_{i}"), portal).unwrap();
-            
+
+            manager
+                .create_portal(format!("portal_{i}"), portal)
+                .unwrap();
+
             // Sleep briefly to ensure different timestamps
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
-        
+
         // Should have removed oldest portal
         assert_eq!(manager.portal_count(), 3);
         assert!(manager.get_portal("portal_0").is_none());
@@ -313,7 +317,7 @@ mod tests {
     #[test]
     fn test_stale_portal_cleanup() {
         let manager = PortalManager::new(10);
-        
+
         // Create some portals
         for i in 0..3 {
             let portal = super::super::Portal {
@@ -325,16 +329,18 @@ mod tests {
                 result_formats: vec![],
                 inferred_param_types: None,
             };
-            
-            manager.create_portal(format!("portal_{i}"), portal).unwrap();
+
+            manager
+                .create_portal(format!("portal_{i}"), portal)
+                .unwrap();
         }
-        
+
         // Access one portal to update its timestamp
         let _ = manager.get_portal("portal_1");
-        
+
         // Clean up with very short duration (all but portal_1 should be removed)
         let removed = manager.cleanup_stale_portals(std::time::Duration::from_millis(5));
-        
+
         // Due to timing, this might remove 0-2 portals
         assert!(removed <= 2);
     }

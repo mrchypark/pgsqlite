@@ -4,7 +4,7 @@ use futures::SinkExt;
 use tokio_util::codec::Framed;
 
 use crate::protocol::{
-    check_global_rate_limit, BackendMessage, ErrorResponse, FrontendMessage, PostgresCodec,
+    BackendMessage, ErrorResponse, FrontendMessage, PostgresCodec, check_global_rate_limit,
 };
 use crate::query::ExtendedQueryHandler;
 use crate::session::{DbHandler, SessionState};
@@ -168,7 +168,8 @@ where
             Ok(true)
         }
         FrontendMessage::Describe { typ, name } => {
-            if let Err(e) = ExtendedQueryHandler::handle_describe(framed, session, typ, name).await {
+            if let Err(e) = ExtendedQueryHandler::handle_describe(framed, session, typ, name).await
+            {
                 send_extended_error(
                     framed,
                     session,

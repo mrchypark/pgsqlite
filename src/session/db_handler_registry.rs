@@ -40,10 +40,11 @@ pub fn get_or_create_handler(
     {
         let registry = REGISTRY.read();
         if let Some(weak) = registry.get(db_path)
-            && let Some(handler) = weak.upgrade() {
-                debug!("Reusing existing DbHandler for: {}", db_path);
-                return Ok(handler);
-            }
+            && let Some(handler) = weak.upgrade()
+        {
+            debug!("Reusing existing DbHandler for: {}", db_path);
+            return Ok(handler);
+        }
     }
 
     // Slow path: need to create a new handler
@@ -51,10 +52,11 @@ pub fn get_or_create_handler(
 
     // Double-check after acquiring write lock (another thread might have created it)
     if let Some(weak) = registry.get(db_path)
-        && let Some(handler) = weak.upgrade() {
-            debug!("Reusing existing DbHandler for: {} (after lock)", db_path);
-            return Ok(handler);
-        }
+        && let Some(handler) = weak.upgrade()
+    {
+        debug!("Reusing existing DbHandler for: {} (after lock)", db_path);
+        return Ok(handler);
+    }
 
     // Create new handler
     debug!("Creating new DbHandler for: {}", db_path);
