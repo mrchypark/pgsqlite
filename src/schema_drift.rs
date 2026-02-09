@@ -180,8 +180,8 @@ impl SchemaDriftDetector {
         table_name: &str,
     ) -> Result<HashMap<String, ColumnInfo>, rusqlite::Error> {
         let mut stmt = conn.prepare(
-            "SELECT column_name, pg_type, sqlite_type 
-             FROM __pgsqlite_schema 
+            "SELECT column_name, pg_type, sqlite_type
+             FROM __pgsqlite_schema
              WHERE table_name = ?1",
         )?;
 

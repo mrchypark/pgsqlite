@@ -1,9 +1,9 @@
+use crate::cache::query_fingerprint::QueryFingerprint;
+use crate::query::{OptimizationHints, QueryPattern, QueryPatternOptimizer};
+use rusqlite::{Connection, Statement};
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
-use rusqlite::{Connection, Statement};
-use crate::query::{QueryPatternOptimizer, QueryPattern, OptimizationHints};
-use crate::cache::query_fingerprint::QueryFingerprint;
 use tracing::{debug, info};
 
 /// Enhanced statement pool with smart caching based on query patterns and optimization hints
@@ -89,10 +89,10 @@ impl EnhancedStatementPool {
     ) -> Result<(Statement<'conn>, StatementMetadata), rusqlite::Error> {
         debug!("Enhanced statement pool preparing query: {}", query);
         let start_time = Instant::now();
-        
+
         // Generate normalized fingerprint for cache key
         let cache_key = self.generate_cache_key(query);
-        
+
         // Update total queries stat
         {
             let mut stats = self.stats.write().unwrap();
@@ -116,17 +116,22 @@ impl EnhancedStatementPool {
 
         // Decide whether to cache based on optimization hints
         let should_cache = self.should_cache_query(&pattern, &hints);
-        
+
         if should_cache {
             debug!("Preparing and caching statement for pattern: {:?}", pattern);
-            
+
             // Prepare statement and extract metadata
             let stmt = conn.prepare(query)?;
             let metadata = self.extract_enhanced_metadata(&stmt, query, &pattern, &hints)?;
-            
+
             // Cache the statement metadata
-            self.cache_statement_metadata(cache_key.clone(), metadata.clone(), pattern.clone(), hints);
-            
+            self.cache_statement_metadata(
+                cache_key.clone(),
+                metadata.clone(),
+                pattern.clone(),
+                hints,
+            );
+
             // Record preparation time
             let preparation_time = start_time.elapsed();
             {
@@ -134,20 +139,24 @@ impl EnhancedStatementPool {
                 stats.cache_misses += 1;
                 stats.total_preparation_time_ms += preparation_time.as_millis() as u64;
             }
-            
-            info!("Cached new statement for pattern {:?} in {}ms", pattern, preparation_time.as_millis());
+
+            info!(
+                "Cached new statement for pattern {:?} in {}ms",
+                pattern,
+                preparation_time.as_millis()
+            );
             Ok((stmt, metadata))
         } else {
             // Don't cache this query - just prepare it
             debug!("Not caching query due to optimization hints: {:?}", hints);
             let stmt = conn.prepare(query)?;
             let metadata = self.extract_basic_metadata(&stmt, query)?;
-            
+
             {
                 let mut stats = self.stats.write().unwrap();
                 stats.cache_misses += 1;
             }
-            
+
             Ok((stmt, metadata))
         }
     }
@@ -165,33 +174,31 @@ impl EnhancedStatementPool {
 
     /// Determine if a query should be cached based on its pattern and hints
     fn should_cache_query(&self, pattern: &QueryPattern, hints: &OptimizationHints) -> bool {
-        use crate::query::{QueryPattern, QueryComplexity};
-        
+        use crate::query::{QueryComplexity, QueryPattern};
+
         match pattern {
             // Always cache these patterns - high reuse potential
-            QueryPattern::SimpleSelect | 
-            QueryPattern::SimpleInsert | 
-            QueryPattern::SimpleUpdate | 
-            QueryPattern::SimpleDelete |
-            QueryPattern::BatchInsert |
-            QueryPattern::CountQuery |
-            QueryPattern::ExistsQuery |
-            QueryPattern::MaxMinQuery => true,
+            QueryPattern::SimpleSelect
+            | QueryPattern::SimpleInsert
+            | QueryPattern::SimpleUpdate
+            | QueryPattern::SimpleDelete
+            | QueryPattern::BatchInsert
+            | QueryPattern::CountQuery
+            | QueryPattern::ExistsQuery
+            | QueryPattern::MaxMinQuery => true,
 
             // Cache medium complexity queries if they use prepared statements
-            QueryPattern::GroupByAggregation |
-            QueryPattern::OrderByLimit |
-            QueryPattern::JoinWithWhere |
-            QueryPattern::SubqueryExists => {
-                hints.use_prepared_statement
-            },
+            QueryPattern::GroupByAggregation
+            | QueryPattern::OrderByLimit
+            | QueryPattern::JoinWithWhere
+            | QueryPattern::SubqueryExists => hints.use_prepared_statement,
 
             // Only cache complex queries if explicitly recommended
-            QueryPattern::NestedSubquery |
-            QueryPattern::UnionQuery |
-            QueryPattern::ComplexQuery => {
+            QueryPattern::NestedSubquery
+            | QueryPattern::UnionQuery
+            | QueryPattern::ComplexQuery => {
                 hints.cache_result && hints.complexity != QueryComplexity::Complex
-            },
+            }
         }
     }
 
@@ -210,23 +217,23 @@ impl EnhancedStatementPool {
         for column in columns {
             let column_name = column.name().to_string();
             column_names.push(column_name.clone());
-            
+
             // Extract column type information from the column
             let mut column_type = column.decl_type().map(|s| s.to_string());
-            
+
             // Special handling for PostgreSQL datetime functions
             // If SQLite returns no type info but we know this is a datetime function,
             // override with the correct PostgreSQL type
             if column_type.is_none() && is_datetime_function_result(query, &column_name) {
                 column_type = Some("timestamptz".to_string());
             }
-            
+
             column_types.push(column_type);
         }
 
         let parameter_count = stmt.parameter_count();
-        let is_select = query.trim().to_uppercase().starts_with("SELECT") || 
-                       query.trim().to_uppercase().starts_with("WITH");
+        let is_select = query.trim().to_uppercase().starts_with("SELECT")
+            || query.trim().to_uppercase().starts_with("WITH");
 
         Ok(StatementMetadata {
             column_names,
@@ -241,7 +248,11 @@ impl EnhancedStatementPool {
     }
 
     /// Extract basic metadata for non-cached queries
-    fn extract_basic_metadata(&self, stmt: &Statement, query: &str) -> Result<StatementMetadata, rusqlite::Error> {
+    fn extract_basic_metadata(
+        &self,
+        stmt: &Statement,
+        query: &str,
+    ) -> Result<StatementMetadata, rusqlite::Error> {
         let columns = stmt.columns();
         let mut column_names = Vec::with_capacity(columns.len());
         let mut column_types = Vec::with_capacity(columns.len());
@@ -249,23 +260,23 @@ impl EnhancedStatementPool {
         for column in columns {
             let column_name = column.name().to_string();
             column_names.push(column_name.clone());
-            
+
             // Extract column type information from the column
             let mut column_type = column.decl_type().map(|s| s.to_string());
-            
+
             // Special handling for PostgreSQL datetime functions
             // If SQLite returns no type info but we know this is a datetime function,
             // override with the correct PostgreSQL type
             if column_type.is_none() && is_datetime_function_result(query, &column_name) {
                 column_type = Some("timestamptz".to_string());
             }
-            
+
             column_types.push(column_type);
         }
 
         let parameter_count = stmt.parameter_count();
-        let is_select = query.trim().to_uppercase().starts_with("SELECT") || 
-                       query.trim().to_uppercase().starts_with("WITH");
+        let is_select = query.trim().to_uppercase().starts_with("SELECT")
+            || query.trim().to_uppercase().starts_with("WITH");
 
         Ok(StatementMetadata {
             column_names,
@@ -282,7 +293,9 @@ impl EnhancedStatementPool {
     /// Get cached metadata if available
     fn get_cached_metadata(&self, cache_key: &str) -> Option<StatementMetadata> {
         let statements = self.statements.read().unwrap();
-        statements.get(cache_key).map(|entry| entry.metadata.clone())
+        statements
+            .get(cache_key)
+            .map(|entry| entry.metadata.clone())
     }
 
     /// Cache statement metadata with optimization data
@@ -294,7 +307,7 @@ impl EnhancedStatementPool {
         hints: OptimizationHints,
     ) {
         let mut statements = self.statements.write().unwrap();
-        
+
         // Check if we need to evict entries
         if statements.len() >= self.max_size {
             self.evict_least_valuable(&mut statements);
@@ -325,8 +338,8 @@ impl EnhancedStatementPool {
 
     /// Calculate priority score for caching decisions
     fn calculate_priority_score(&self, pattern: &QueryPattern, hints: &OptimizationHints) -> f64 {
-        use crate::query::{QueryPattern, QueryComplexity};
-        
+        use crate::query::{QueryComplexity, QueryPattern};
+
         let mut score = 1.0;
 
         // Pattern-based scoring
@@ -400,21 +413,24 @@ impl EnhancedStatementPool {
             statements.remove(&evict_key);
             let mut stats = self.stats.write().unwrap();
             stats.evictions += 1;
-            debug!("Evicted statement with key: {} (score: {:.2})", evict_key, lowest_score);
+            debug!(
+                "Evicted statement with key: {} (score: {:.2})",
+                evict_key, lowest_score
+            );
         }
     }
 
     /// Batch INSERT fingerprint generation (from existing implementation)
     fn batch_insert_fingerprint(&self, query: &str) -> Option<String> {
-        let upper_query = query.to_uppercase();
-        
+        // SQL keywords are ASCII; using ASCII uppercasing preserves byte indices for slicing.
+        let upper_query = query.to_ascii_uppercase();
+
         if !upper_query.contains("INSERT") || (!query.contains("),(") && !query.contains("), (")) {
             return None;
         }
-        
-        if let Some(_values_pos) = upper_query.find("VALUES") {
-            let original_values_pos = query.to_uppercase().find("VALUES").unwrap();
-            let prefix = &query[..original_values_pos + 6].trim();
+
+        if let Some(values_pos) = upper_query.find("VALUES") {
+            let prefix = query[..values_pos + 6].trim();
             Some(format!("{prefix} (?)"))
         } else {
             None
@@ -453,26 +469,30 @@ impl Default for EnhancedStatementPool {
 fn is_datetime_function_result(query: &str, column_name: &str) -> bool {
     let query_upper = query.to_uppercase();
     let column_upper = column_name.to_uppercase();
-    
+
     // Check for NOW() function
     if query_upper.contains("NOW()") && (column_upper == "NOW" || column_upper == "NOW()") {
         return true;
     }
-    
+
     // Check for CURRENT_TIMESTAMP function
-    if query_upper.contains("CURRENT_TIMESTAMP") && (column_upper == "CURRENT_TIMESTAMP" || column_upper == "CURRENT_TIMESTAMP()") {
+    if query_upper.contains("CURRENT_TIMESTAMP")
+        && (column_upper == "CURRENT_TIMESTAMP" || column_upper == "CURRENT_TIMESTAMP()")
+    {
         return true;
     }
-    
+
     // Check for aliased datetime functions like "SELECT NOW() as now"
     if query_upper.contains("NOW()") && query_upper.contains(&format!("AS {column_upper}")) {
         return true;
     }
-    
-    if query_upper.contains("CURRENT_TIMESTAMP") && query_upper.contains(&format!("AS {column_upper}")) {
+
+    if query_upper.contains("CURRENT_TIMESTAMP")
+        && query_upper.contains(&format!("AS {column_upper}"))
+    {
         return true;
     }
-    
+
     false
 }
 
@@ -492,12 +512,12 @@ mod tests {
     #[test]
     fn test_cache_key_generation() {
         let pool = EnhancedStatementPool::new(100);
-        
+
         // Test simple query
         let _key1 = pool.generate_cache_key("SELECT * FROM users WHERE id = 1");
         let _key2 = pool.generate_cache_key("SELECT * FROM users WHERE id = 2");
         // Should be similar (normalized) but not identical due to different literals
-        
+
         // Test batch INSERT
         let batch_key = pool.generate_cache_key("INSERT INTO users (name, email) VALUES ('John', 'john@example.com'), ('Jane', 'jane@example.com')");
         assert!(batch_key.contains("INSERT INTO users (name, email) VALUES (?)"));
@@ -506,7 +526,7 @@ mod tests {
     #[test]
     fn test_priority_scoring() {
         let pool = EnhancedStatementPool::new(100);
-        
+
         // Simple SELECT should have high priority
         let hints = OptimizationHints {
             use_fast_path: true,
@@ -517,7 +537,7 @@ mod tests {
             expected_result_size: crate::query::ResultSize::Small,
             complexity: crate::query::QueryComplexity::Simple,
         };
-        
+
         let score = pool.calculate_priority_score(&QueryPattern::SimpleSelect, &hints);
         assert!(score > 5.0); // Should be high priority
     }
@@ -525,7 +545,7 @@ mod tests {
     #[test]
     fn test_should_cache_decisions() {
         let pool = EnhancedStatementPool::new(100);
-        
+
         // Simple queries should always be cached
         let simple_hints = OptimizationHints {
             use_fast_path: true,
@@ -536,10 +556,10 @@ mod tests {
             expected_result_size: crate::query::ResultSize::Small,
             complexity: crate::query::QueryComplexity::Simple,
         };
-        
+
         assert!(pool.should_cache_query(&QueryPattern::SimpleSelect, &simple_hints));
         assert!(pool.should_cache_query(&QueryPattern::BatchInsert, &simple_hints));
-        
+
         // Complex queries should be more selective
         let complex_hints = OptimizationHints {
             use_fast_path: false,
@@ -550,7 +570,7 @@ mod tests {
             expected_result_size: crate::query::ResultSize::Large,
             complexity: crate::query::QueryComplexity::Complex,
         };
-        
+
         assert!(!pool.should_cache_query(&QueryPattern::ComplexQuery, &complex_hints));
     }
 }

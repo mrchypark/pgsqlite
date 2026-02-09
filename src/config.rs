@@ -1,7 +1,16 @@
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use std::env;
+use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
+
+#[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthMode {
+    /// No authentication (recommended only for local development).
+    Trust,
+    /// Cleartext password authentication (simple and widely supported).
+    Password,
+}
 
 #[derive(Parser, Debug, Clone)]
 #[command(name = "pgsqlite")]
@@ -11,6 +20,14 @@ pub struct Config {
     // Basic configuration
     #[arg(short, long, default_value = "5432", env = "PGSQLITE_PORT")]
     pub port: u16,
+
+    #[arg(
+        long,
+        default_value = "127.0.0.1",
+        env = "PGSQLITE_LISTEN_ADDR",
+        help = "TCP listen address (use 0.0.0.0 to listen on all interfaces)"
+    )]
+    pub listen_addr: IpAddr,
 
     #[arg(
         short,
@@ -53,6 +70,37 @@ pub struct Config {
         help = "Disable TCP listener and use only Unix socket"
     )]
     pub no_tcp: bool,
+
+    #[arg(
+        long,
+        default_value = "trust",
+        env = "PGSQLITE_AUTH",
+        value_enum,
+        help = "Authentication mode (trust, password)"
+    )]
+    pub auth: AuthMode,
+
+    #[arg(
+        long,
+        env = "PGSQLITE_PASSWORD",
+        help = "Password for --auth password (cleartext password auth)"
+    )]
+    pub password: Option<String>,
+
+    #[arg(
+        long,
+        env = "PGSQLITE_INSECURE_ALLOW_REMOTE_TRUST",
+        help = "Allow non-loopback listen address with --auth trust (INSECURE)"
+    )]
+    pub insecure_allow_remote_trust: bool,
+
+    #[arg(
+        long,
+        default_value = "0700",
+        env = "PGSQLITE_SOCKET_PERMISSIONS",
+        help = "Unix socket file permissions in octal (e.g. 0700, 0777)"
+    )]
+    pub socket_permissions: String,
 
     // Connection pool configuration
     #[arg(
@@ -386,11 +434,36 @@ impl Config {
 
         // Validate SSL configuration
         if config.ssl && config.no_tcp {
-            eprintln!("Error: SSL cannot be enabled when TCP is disabled (Unix sockets don't support SSL)");
+            eprintln!(
+                "Error: SSL cannot be enabled when TCP is disabled (Unix sockets don't support SSL)"
+            );
+            std::process::exit(1);
+        }
+
+        if matches!(config.auth, AuthMode::Password)
+            && config.password.as_deref().unwrap_or("").is_empty()
+        {
+            eprintln!("Error: --auth password requires --password/PGSQLITE_PASSWORD");
+            std::process::exit(1);
+        }
+
+        if !config.no_tcp
+            && !config.listen_addr.is_loopback()
+            && matches!(config.auth, AuthMode::Trust)
+            && !config.insecure_allow_remote_trust
+        {
+            eprintln!(
+                "Error: --listen-addr {} with --auth trust is insecure. Use --auth password, or explicitly allow with --insecure-allow-remote-trust.",
+                config.listen_addr
+            );
             std::process::exit(1);
         }
 
         config
+    }
+
+    pub fn socket_permissions_mode(&self) -> Option<u32> {
+        parse_octal_mode(&self.socket_permissions)
     }
 
     pub fn database_layout(&self) -> DatabaseLayout {
@@ -502,6 +575,15 @@ impl Config {
             .clone()
             .unwrap_or_else(|| env::temp_dir().to_string_lossy().to_string())
     }
+}
+
+fn parse_octal_mode(input: &str) -> Option<u32> {
+    let trimmed = input.trim();
+    let digits = trimmed
+        .strip_prefix("0o")
+        .or_else(|| trimmed.strip_prefix("0O"))
+        .unwrap_or(trimmed);
+    u32::from_str_radix(digits, 8).ok()
 }
 
 #[derive(Debug, Clone)]

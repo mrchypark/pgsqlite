@@ -1,9 +1,9 @@
-use crate::session::db_handler::{DbHandler, DbResponse};
-use crate::PgSqliteError;
-use sqlparser::ast::{Select, SelectItem, Expr};
-use tracing::debug;
-use std::collections::HashMap;
 use super::where_evaluator::WhereEvaluator;
+use crate::PgSqliteError;
+use crate::session::db_handler::{DbHandler, DbResponse};
+use sqlparser::ast::{Expr, Select, SelectItem};
+use std::collections::HashMap;
+use tracing::debug;
 
 pub struct PgSequenceHandler;
 
@@ -39,7 +39,10 @@ impl PgSequenceHandler {
         for sequence in filtered_sequences {
             let mut row = Vec::new();
             for column in &selected_columns {
-                let value = sequence.get(column).cloned().unwrap_or_else(|| b"".to_vec());
+                let value = sequence
+                    .get(column)
+                    .cloned()
+                    .unwrap_or_else(|| b"".to_vec());
                 row.push(Some(value));
             }
             rows.push(row);
@@ -68,7 +71,10 @@ impl PgSequenceHandler {
                         selected.push(col_name);
                     }
                 }
-                SelectItem::ExprWithAlias { expr: Expr::Identifier(ident), alias } => {
+                SelectItem::ExprWithAlias {
+                    expr: Expr::Identifier(ident),
+                    alias,
+                } => {
                     let col_name = ident.value.to_lowercase();
                     if all_columns.contains(&col_name) {
                         selected.push(alias.value.clone());
@@ -81,7 +87,10 @@ impl PgSequenceHandler {
                 SelectItem::UnnamedExpr(Expr::Function(_)) => {
                     selected.push("count".to_string());
                 }
-                SelectItem::ExprWithAlias { expr: Expr::Function(_), alias } => {
+                SelectItem::ExprWithAlias {
+                    expr: Expr::Function(_),
+                    alias,
+                } => {
                     selected.push(alias.value.clone());
                 }
                 _ => {}
@@ -94,7 +103,9 @@ impl PgSequenceHandler {
     async fn get_sequences(db: &DbHandler) -> Result<Vec<HashMap<String, Vec<u8>>>, PgSqliteError> {
         let mut sequences = Vec::new();
 
-        let conn = rusqlite::Connection::open(&db.db_path).map_err(PgSqliteError::Sqlite)?;
+        let conn = db
+            .open_dedicated_connection()
+            .map_err(PgSqliteError::Sqlite)?;
 
         let query = "SELECT name, seq FROM sqlite_sequence";
 
@@ -109,11 +120,13 @@ impl PgSequenceHandler {
             }
         };
 
-        let rows = stmt.query_map([], |row| {
-            let name: String = row.get(0)?;
-            let seq: i64 = row.get(1)?;
-            Ok((name, seq))
-        }).map_err(PgSqliteError::Sqlite)?;
+        let rows = stmt
+            .query_map([], |row| {
+                let name: String = row.get(0)?;
+                let seq: i64 = row.get(1)?;
+                Ok((name, seq))
+            })
+            .map_err(PgSqliteError::Sqlite)?;
 
         for row_result in rows.flatten() {
             let (table_name, current_value) = row_result;
@@ -139,7 +152,10 @@ impl PgSequenceHandler {
             // Cycle behavior (SQLite doesn't cycle, default to false)
             sequence.insert("seqcycle".to_string(), b"f".to_vec());
 
-            debug!("Found sequence for table {} with current value {}", table_name, current_value);
+            debug!(
+                "Found sequence for table {} with current value {}",
+                table_name, current_value
+            );
             sequences.push(sequence);
         }
 

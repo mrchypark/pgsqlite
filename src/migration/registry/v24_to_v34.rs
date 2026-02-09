@@ -27,7 +27,9 @@ pub(super) fn register_v24_pg_tablespace_support(registry: &mut BTreeMap<u32, Mi
 }
 
 /// Version 25: information_schema.triggers support
-pub(super) fn register_v25_information_schema_triggers_support(registry: &mut BTreeMap<u32, Migration>) {
+pub(super) fn register_v25_information_schema_triggers_support(
+    registry: &mut BTreeMap<u32, Migration>,
+) {
     registry.insert(25, Migration {
         version: 25,
         name: "information_schema_triggers_support",
@@ -419,7 +421,9 @@ pub(super) fn register_v28_pg_stat_io_support(registry: &mut BTreeMap<u32, Migra
 /// This migration adds the missing information_schema views that were previously
 /// handled only by catalog interceptors. Having real views enables JOIN, COUNT,
 /// and other SQL operations that require actual table structures.
-pub(super) fn register_v29_information_schema_complete_views(registry: &mut BTreeMap<u32, Migration>) {
+pub(super) fn register_v29_information_schema_complete_views(
+    registry: &mut BTreeMap<u32, Migration>,
+) {
     registry.insert(29, Migration {
         version: 29,
         name: "information_schema_complete_views",
@@ -1248,7 +1252,9 @@ pub(super) fn register_v31_user_sql_functions_support(registry: &mut BTreeMap<u3
 }
 
 /// Version 32: Rebuild information_schema_routines view to include user SQL functions
-pub(super) fn register_v32_information_schema_routines_user_functions(registry: &mut BTreeMap<u32, Migration>) {
+pub(super) fn register_v32_information_schema_routines_user_functions(
+    registry: &mut BTreeMap<u32, Migration>,
+) {
     registry.insert(32, Migration {
         version: 32,
         name: "information_schema_routines_user_functions",
@@ -1407,7 +1413,9 @@ pub(super) fn register_v32_information_schema_routines_user_functions(registry: 
 }
 
 /// Version 33: Rebuild information_schema_routines view with full builtin list and user SQL functions
-pub(super) fn register_v33_information_schema_routines_full_list(registry: &mut BTreeMap<u32, Migration>) {
+pub(super) fn register_v33_information_schema_routines_full_list(
+    registry: &mut BTreeMap<u32, Migration>,
+) {
     registry.insert(33, Migration {
         version: 33,
         name: "information_schema_routines_full_list",
@@ -1917,14 +1925,18 @@ pub(super) fn register_v33_information_schema_routines_full_list(registry: &mut 
 }
 
 /// Version 34: Add nulls_distinct column to information_schema.table_constraints view
-pub(super) fn register_v34_table_constraints_nulls_distinct(registry: &mut BTreeMap<u32, Migration>) {
-    registry.insert(34, Migration {
-        version: 34,
-        name: "information_schema_table_constraints_nulls_distinct",
-        description: "Add nulls_distinct column to information_schema.table_constraints",
-        up: MigrationAction::SqlBatch(&[
-            r#"DROP VIEW IF EXISTS information_schema_table_constraints;"#,
-            r#"
+pub(super) fn register_v34_table_constraints_nulls_distinct(
+    registry: &mut BTreeMap<u32, Migration>,
+) {
+    registry.insert(
+        34,
+        Migration {
+            version: 34,
+            name: "information_schema_table_constraints_nulls_distinct",
+            description: "Add nulls_distinct column to information_schema.table_constraints",
+            up: MigrationAction::SqlBatch(&[
+                r#"DROP VIEW IF EXISTS information_schema_table_constraints;"#,
+                r#"
             CREATE VIEW IF NOT EXISTS information_schema_table_constraints AS
             SELECT
                 'main' as constraint_catalog,
@@ -1947,15 +1959,15 @@ pub(super) fn register_v34_table_constraints_nulls_distinct(registry: &mut BTree
             FROM pg_constraint con
             JOIN pg_class c ON con.conrelid = c.oid;
             "#,
-            r#"
+                r#"
             UPDATE __pgsqlite_metadata
             SET value = '34', updated_at = strftime('%s', 'now')
             WHERE key = 'schema_version';
             "#,
-        ]),
-        down: Some(MigrationAction::SqlBatch(&[
-            r#"DROP VIEW IF EXISTS information_schema_table_constraints;"#,
-            r#"
+            ]),
+            down: Some(MigrationAction::SqlBatch(&[
+                r#"DROP VIEW IF EXISTS information_schema_table_constraints;"#,
+                r#"
             CREATE VIEW IF NOT EXISTS information_schema_table_constraints AS
             SELECT
                 'main' as constraint_catalog,
@@ -1977,12 +1989,13 @@ pub(super) fn register_v34_table_constraints_nulls_distinct(registry: &mut BTree
             FROM pg_constraint con
             JOIN pg_class c ON con.conrelid = c.oid;
             "#,
-            r#"
+                r#"
             UPDATE __pgsqlite_metadata
             SET value = '33', updated_at = strftime('%s', 'now')
             WHERE key = 'schema_version';
             "#,
-        ])),
-        dependencies: vec![33],
-    });
+            ])),
+            dependencies: vec![33],
+        },
+    );
 }

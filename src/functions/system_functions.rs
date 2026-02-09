@@ -1,4 +1,4 @@
-use rusqlite::{functions::FunctionFlags, Connection, Result};
+use rusqlite::{Connection, Result, functions::FunctionFlags};
 use tracing::debug;
 
 /// Register PostgreSQL system information functions

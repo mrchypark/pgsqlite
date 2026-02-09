@@ -1,11 +1,10 @@
+use pgsqlite::protocol::{
+    AuthenticationRequest, FrontendMessage, StartupMessage, parser::MessageParser,
+};
+use pgsqlite::security::events;
 use std::io::Cursor;
 use std::time::Duration;
 use tokio::time::timeout;
-use pgsqlite::protocol::{
-    AuthenticationRequest, FrontendMessage, StartupMessage,
-    parser::MessageParser,
-};
-use pgsqlite::security::events;
 
 // Fuzzing test for protocol message parsing
 #[tokio::test]
@@ -22,13 +21,18 @@ async fn test_fuzz_message_parsing() {
 
         // Log progress every 100 cases
         if i % 100 == 0 {
-            println!("Processed {} fuzz cases: {} successful, {} errors",
-                     i, successful_parses, handled_errors);
+            println!(
+                "Processed {} fuzz cases: {} successful, {} errors",
+                i, successful_parses, handled_errors
+            );
         }
     }
 
-    println!("Fuzz testing complete: {}/{} cases handled safely",
-             successful_parses + handled_errors, test_cases.len());
+    println!(
+        "Fuzz testing complete: {}/{} cases handled safely",
+        successful_parses + handled_errors,
+        test_cases.len()
+    );
 
     // All cases should either parse successfully or error gracefully
     assert_eq!(successful_parses + handled_errors, test_cases.len());
@@ -67,23 +71,23 @@ async fn test_fuzz_authentication_messages() {
             Ok(auth_req) => {
                 // Valid auth request should have reasonable parameters
                 match auth_req {
-                    AuthenticationRequest::Ok => {},
-                    AuthenticationRequest::Password => {},
+                    AuthenticationRequest::Ok => {}
+                    AuthenticationRequest::Password => {}
                     AuthenticationRequest::MD5Password { salt } => {
                         assert_eq!(salt.len(), 4);
-                    },
+                    }
                     AuthenticationRequest::SASL { mechanisms } => {
                         assert!(mechanisms.len() <= 10);
                         for mechanism in mechanisms {
                             assert!(mechanism.len() <= 100);
                         }
-                    },
+                    }
                     AuthenticationRequest::SASLContinue { data } => {
                         assert!(data.len() <= 4096);
-                    },
+                    }
                     AuthenticationRequest::SASLFinal { data } => {
                         assert!(data.len() <= 4096);
-                    },
+                    }
                 }
             }
             Err(_) => {
@@ -108,15 +112,16 @@ async fn test_fuzz_query_messages() {
 
                     // Should not contain obvious SQL injection patterns
                     let sql_lower = sql.to_lowercase();
-                    if sql_lower.contains("drop table") ||
-                       sql_lower.contains("delete from") ||
-                       sql_lower.contains("truncate") {
+                    if sql_lower.contains("drop table")
+                        || sql_lower.contains("delete from")
+                        || sql_lower.contains("truncate")
+                    {
                         // Log potential malicious query for security audit
                         events::sql_injection_attempt(
                             None,
                             None,
                             &sql,
-                            "Suspicious DDL/DML in fuzzing"
+                            "Suspicious DDL/DML in fuzzing",
                         );
                     }
                 }
@@ -161,31 +166,37 @@ async fn parse_message_safely(input: &[u8]) -> Result<FrontendMessage, Box<dyn s
 
     match parser.parse_message(&mut cursor).await {
         Ok(msg) => Ok(msg),
-        Err(e) => Err(Box::new(e))
+        Err(e) => Err(Box::new(e)),
     }
 }
 
-async fn parse_startup_message_safely(input: &[u8]) -> Result<StartupMessage, Box<dyn std::error::Error>> {
+async fn parse_startup_message_safely(
+    input: &[u8],
+) -> Result<StartupMessage, Box<dyn std::error::Error>> {
     let mut cursor = Cursor::new(input);
     let parser = MessageParser::new();
 
     match parser.parse_startup_message(&mut cursor).await {
         Ok(msg) => Ok(msg),
-        Err(e) => Err(Box::new(e))
+        Err(e) => Err(Box::new(e)),
     }
 }
 
-async fn parse_auth_message_safely(input: &[u8]) -> Result<AuthenticationRequest, Box<dyn std::error::Error>> {
+async fn parse_auth_message_safely(
+    input: &[u8],
+) -> Result<AuthenticationRequest, Box<dyn std::error::Error>> {
     let mut cursor = Cursor::new(input);
     let parser = MessageParser::new();
 
     match parser.parse_auth_request(&mut cursor).await {
         Ok(msg) => Ok(msg),
-        Err(e) => Err(Box::new(e))
+        Err(e) => Err(Box::new(e)),
     }
 }
 
-async fn parse_query_message_safely(input: &[u8]) -> Result<FrontendMessage, Box<dyn std::error::Error>> {
+async fn parse_query_message_safely(
+    input: &[u8],
+) -> Result<FrontendMessage, Box<dyn std::error::Error>> {
     let mut cursor = Cursor::new(input);
     let parser = MessageParser::new();
 
@@ -201,7 +212,7 @@ async fn parse_query_message_safely(input: &[u8]) -> Result<FrontendMessage, Box
 
     match parser.parse_query(&mut cursor, length - 4).await {
         Ok(msg) => Ok(msg),
-        Err(e) => Err(Box::new(e))
+        Err(e) => Err(Box::new(e)),
     }
 }
 

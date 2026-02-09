@@ -1,4 +1,4 @@
-use sqlparser::ast::{Expr, BinaryOperator, Value as SqlValue, UnaryOperator};
+use sqlparser::ast::{BinaryOperator, Expr, UnaryOperator, Value as SqlValue};
 use std::collections::HashMap;
 use tracing::debug;
 
@@ -19,9 +19,11 @@ impl WhereEvaluator {
             Expr::UnaryOp { op, expr } => {
                 Self::evaluate_unary_op(op, expr, row_data, column_mapping)
             }
-            Expr::InList { expr, list, negated } => {
-                Self::evaluate_in_list(expr, list, *negated, row_data, column_mapping)
-            }
+            Expr::InList {
+                expr,
+                list,
+                negated,
+            } => Self::evaluate_in_list(expr, list, *negated, row_data, column_mapping),
             Expr::IsNull(expr) => {
                 let value = Self::get_column_value(expr, row_data);
                 value.is_none()
@@ -30,12 +32,18 @@ impl WhereEvaluator {
                 let value = Self::get_column_value(expr, row_data);
                 value.is_some()
             }
-            Expr::Like { expr, pattern, negated, .. } => {
-                Self::evaluate_like(expr, pattern, *negated, row_data, column_mapping)
-            }
-            Expr::ILike { expr, pattern, negated, .. } => {
-                Self::evaluate_ilike(expr, pattern, *negated, row_data, column_mapping)
-            }
+            Expr::Like {
+                expr,
+                pattern,
+                negated,
+                ..
+            } => Self::evaluate_like(expr, pattern, *negated, row_data, column_mapping),
+            Expr::ILike {
+                expr,
+                pattern,
+                negated,
+                ..
+            } => Self::evaluate_ilike(expr, pattern, *negated, row_data, column_mapping),
             Expr::Value(val) => {
                 // A literal value evaluates to its boolean interpretation
                 match &val.value {
@@ -47,7 +55,9 @@ impl WhereEvaluator {
             Expr::Function(func) => {
                 // Handle function calls in WHERE clause
                 let func_name = func.name.to_string().to_lowercase();
-                if func_name == "pg_table_is_visible" || func_name == "pg_catalog.pg_table_is_visible" {
+                if func_name == "pg_table_is_visible"
+                    || func_name == "pg_catalog.pg_table_is_visible"
+                {
                     // pg_table_is_visible always returns true for all tables in SQLite
                     true
                 } else {
@@ -172,17 +182,14 @@ impl WhereEvaluator {
         let mut found = false;
         for item in list {
             if let Some(item_val) = Self::get_expression_value(item, row_data)
-                && value == item_val {
-                    found = true;
-                    break;
-                }
+                && value == item_val
+            {
+                found = true;
+                break;
+            }
         }
 
-        if negated {
-            !found
-        } else {
-            found
-        }
+        if negated { !found } else { found }
     }
 
     fn evaluate_like(
@@ -197,12 +204,11 @@ impl WhereEvaluator {
             Self::get_expression_value(pattern, row_data),
         ) {
             let matches = Self::like_match(&value, &pattern_str);
-            debug!("LIKE evaluation: '{}' LIKE '{}' = {}", value, pattern_str, matches);
-            if negated {
-                !matches
-            } else {
-                matches
-            }
+            debug!(
+                "LIKE evaluation: '{}' LIKE '{}' = {}",
+                value, pattern_str, matches
+            );
+            if negated { !matches } else { matches }
         } else {
             debug!("LIKE evaluation failed to get values from expressions");
             false
@@ -221,11 +227,7 @@ impl WhereEvaluator {
             Self::get_expression_value(pattern, row_data),
         ) {
             let matches = Self::like_match(&value.to_lowercase(), &pattern_str.to_lowercase());
-            if negated {
-                !matches
-            } else {
-                matches
-            }
+            if negated { !matches } else { matches }
         } else {
             false
         }
@@ -245,25 +247,21 @@ impl WhereEvaluator {
             // For now, use simple pattern matching as a placeholder
             let matches = if pattern_str.starts_with('^') && pattern_str.ends_with('$') {
                 // Exact match pattern
-                let pattern_content = &pattern_str[1..pattern_str.len()-1];
+                let pattern_content = &pattern_str[1..pattern_str.len() - 1];
                 value == pattern_content
             } else if let Some(pattern_content) = pattern_str.strip_prefix('^') {
                 // Starts with pattern
                 value.starts_with(pattern_content)
             } else if pattern_str.ends_with('$') {
                 // Ends with pattern
-                let pattern_content = &pattern_str[..pattern_str.len()-1];
+                let pattern_content = &pattern_str[..pattern_str.len() - 1];
                 value.ends_with(pattern_content)
             } else {
                 // Contains pattern
                 value.contains(&pattern_str)
             };
 
-            if negated {
-                !matches
-            } else {
-                matches
-            }
+            if negated { !matches } else { matches }
         } else {
             false
         }
@@ -271,9 +269,7 @@ impl WhereEvaluator {
 
     fn get_column_value(expr: &Expr, row_data: &HashMap<String, String>) -> Option<String> {
         match expr {
-            Expr::Identifier(ident) => {
-                row_data.get(&ident.value.to_lowercase()).cloned()
-            }
+            Expr::Identifier(ident) => row_data.get(&ident.value.to_lowercase()).cloned(),
             Expr::CompoundIdentifier(parts) => {
                 // For compound identifiers like t.column, use just the column name
                 if let Some(last) = parts.last() {
@@ -324,7 +320,7 @@ impl WhereEvaluator {
         // Convert SQL LIKE pattern to simple pattern matching
         // % matches any sequence of characters
         // _ matches any single character
-        
+
         // For simplicity, we'll use a basic implementation
         // that handles common cases
         if pattern == "%" {
@@ -333,7 +329,7 @@ impl WhereEvaluator {
 
         let pattern_chars: Vec<char> = pattern.chars().collect();
         let value_chars: Vec<char> = value.chars().collect();
-        
+
         Self::like_match_recursive(&value_chars, &pattern_chars, 0, 0)
     }
 
@@ -415,16 +411,16 @@ mod tests {
                 Expr::Value(sqlparser::ast::ValueWithSpan {
                     value: SqlValue::SingleQuotedString("r".to_string()),
                     span: sqlparser::tokenizer::Span {
-                    start: sqlparser::tokenizer::Location { line: 1, column: 1 },
-                    end: sqlparser::tokenizer::Location { line: 1, column: 1 },
-                },
+                        start: sqlparser::tokenizer::Location { line: 1, column: 1 },
+                        end: sqlparser::tokenizer::Location { line: 1, column: 1 },
+                    },
                 }),
                 Expr::Value(sqlparser::ast::ValueWithSpan {
                     value: SqlValue::SingleQuotedString("p".to_string()),
                     span: sqlparser::tokenizer::Span {
-                    start: sqlparser::tokenizer::Location { line: 1, column: 1 },
-                    end: sqlparser::tokenizer::Location { line: 1, column: 1 },
-                },
+                        start: sqlparser::tokenizer::Location { line: 1, column: 1 },
+                        end: sqlparser::tokenizer::Location { line: 1, column: 1 },
+                    },
                 }),
             ],
             negated: false,
@@ -437,15 +433,21 @@ mod tests {
     #[test]
     fn test_like_match_function() {
         // Test basic like patterns
-        assert!(WhereEvaluator::like_match("pgclass_test_table1", "pgclass_test_%"));
-        assert!(WhereEvaluator::like_match("pgclass_test_table2", "pgclass_test_%"));
+        assert!(WhereEvaluator::like_match(
+            "pgclass_test_table1",
+            "pgclass_test_%"
+        ));
+        assert!(WhereEvaluator::like_match(
+            "pgclass_test_table2",
+            "pgclass_test_%"
+        ));
         assert!(!WhereEvaluator::like_match("other_table", "pgclass_test_%"));
         assert!(WhereEvaluator::like_match("test", "test"));
         assert!(WhereEvaluator::like_match("test", "te%"));
         assert!(WhereEvaluator::like_match("test", "%st"));
         assert!(WhereEvaluator::like_match("test", "t_st"));
     }
-    
+
     #[test]
     fn test_like_pattern() {
         let mut row_data = HashMap::new();
@@ -467,11 +469,11 @@ mod tests {
 
         let column_mapping = HashMap::new();
         assert!(WhereEvaluator::evaluate(&expr, &row_data, &column_mapping));
-        
+
         // Test our specific case
         let mut row_data2 = HashMap::new();
         row_data2.insert("relname".to_string(), "pgclass_test_table1".to_string());
-        
+
         let expr2 = Expr::Like {
             expr: Box::new(Expr::Identifier(sqlparser::ast::Ident::new("relname"))),
             pattern: Box::new(Expr::Value(sqlparser::ast::ValueWithSpan {
@@ -485,8 +487,10 @@ mod tests {
             escape_char: None,
             any: false,
         };
-        
-        assert!(WhereEvaluator::evaluate(&expr2, &row_data2, &column_mapping),
-            "pgclass_test_table1 should match pgclass_test_%");
+
+        assert!(
+            WhereEvaluator::evaluate(&expr2, &row_data2, &column_mapping),
+            "pgclass_test_table1 should match pgclass_test_%"
+        );
     }
 }

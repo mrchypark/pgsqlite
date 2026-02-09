@@ -9,13 +9,17 @@ async fn test_information_schema_schemata() {
     let client = &server.client;
 
     // Test SELECT * FROM information_schema.schemata
-    let rows = client.query("SELECT * FROM information_schema.schemata", &[]).await.unwrap();
+    let rows = client
+        .query("SELECT * FROM information_schema.schemata", &[])
+        .await
+        .unwrap();
 
     // Should return 3 schemas: public, pg_catalog, information_schema
     assert_eq!(rows.len(), 3);
 
     // Check that we have the expected schemas
-    let schema_names: Vec<&str> = rows.iter()
+    let schema_names: Vec<&str> = rows
+        .iter()
         .map(|row| row.get::<_, &str>(1)) // schema_name is column 1
         .collect();
     assert!(schema_names.contains(&"public"));
@@ -31,11 +35,15 @@ async fn test_information_schema_schemata_specific_columns() {
     let client = &server.client;
 
     // Test SELECT schema_name FROM information_schema.schemata
-    let rows = client.query("SELECT schema_name FROM information_schema.schemata", &[]).await.unwrap();
+    let rows = client
+        .query("SELECT schema_name FROM information_schema.schemata", &[])
+        .await
+        .unwrap();
 
     assert_eq!(rows.len(), 3);
     // Check that we have the expected schemas
-    let schema_names: Vec<&str> = rows.iter()
+    let schema_names: Vec<&str> = rows
+        .iter()
         .map(|row| row.get::<_, &str>(0)) // schema_name is the only column
         .collect();
     assert!(schema_names.contains(&"public"));
@@ -50,21 +58,31 @@ async fn test_information_schema_tables() {
     let server = common::setup_test_server_with_init(|db| {
         Box::pin(async move {
             // Create a test table and view
-            db.execute("CREATE TABLE test_table (id INTEGER, name TEXT)").await?;
-            db.execute("CREATE VIEW test_view AS SELECT id FROM test_table").await?;
+            db.execute("CREATE TABLE test_table (id INTEGER, name TEXT)")
+                .await?;
+            db.execute("CREATE VIEW test_view AS SELECT id FROM test_table")
+                .await?;
             Ok(())
         })
-    }).await;
+    })
+    .await;
     let client = &server.client;
 
     // Test SELECT table_name, table_type FROM information_schema.tables
-    let rows = client.query("SELECT table_name, table_type FROM information_schema.tables", &[]).await.unwrap();
+    let rows = client
+        .query(
+            "SELECT table_name, table_type FROM information_schema.tables",
+            &[],
+        )
+        .await
+        .unwrap();
 
     // Should return at least our test table and view
     assert!(rows.len() >= 2);
 
     // Check that our table and view are present with correct types
-    let table_info: Vec<(&str, &str)> = rows.iter()
+    let table_info: Vec<(&str, &str)> = rows
+        .iter()
         .map(|row| (row.get::<_, &str>(0), row.get::<_, &str>(1)))
         .collect();
 
@@ -81,11 +99,18 @@ async fn test_information_schema_tables_all_columns() {
             db.execute("CREATE TABLE test_table (id INTEGER)").await?;
             Ok(())
         })
-    }).await;
+    })
+    .await;
     let client = &server.client;
 
     // Test SELECT * FROM information_schema.tables WHERE table_name = 'test_table'
-    let rows = client.query("SELECT * FROM information_schema.tables WHERE table_name = 'test_table'", &[]).await.unwrap();
+    let rows = client
+        .query(
+            "SELECT * FROM information_schema.tables WHERE table_name = 'test_table'",
+            &[],
+        )
+        .await
+        .unwrap();
 
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].len(), 12); // All 12 columns
@@ -107,10 +132,12 @@ async fn test_information_schema_tables_view_insertable() {
     let server = common::setup_test_server_with_init(|db| {
         Box::pin(async move {
             db.execute("CREATE TABLE test_table (id INTEGER)").await?;
-            db.execute("CREATE VIEW test_view AS SELECT id FROM test_table").await?;
+            db.execute("CREATE VIEW test_view AS SELECT id FROM test_table")
+                .await?;
             Ok(())
         })
-    }).await;
+    })
+    .await;
     let client = &server.client;
 
     // Test that views are marked as not insertable
@@ -143,7 +170,8 @@ async fn test_information_schema_columns_basic() {
     let server = common::setup_test_server_with_init(|db| {
         Box::pin(async move {
             // Create a test table with various column types
-            db.execute(r#"
+            db.execute(
+                r#"
                 CREATE TABLE test_table (
                     id INTEGER PRIMARY KEY,
                     name VARCHAR(100) NOT NULL,
@@ -152,10 +180,13 @@ async fn test_information_schema_columns_basic() {
                     is_active BOOLEAN DEFAULT true,
                     created_at TIMESTAMP
                 )
-            "#).await?;
+            "#,
+            )
+            .await?;
             Ok(())
         })
-    }).await;
+    })
+    .await;
     let client = &server.client;
 
     // Query information_schema.columns
@@ -182,27 +213,27 @@ async fn test_information_schema_columns_basic() {
             "id" => {
                 assert_eq!(data_type, "integer");
                 assert_eq!(is_nullable, "NO"); // PRIMARY KEY is NOT NULL
-            },
+            }
             "name" => {
                 assert_eq!(data_type, "character varying");
                 assert_eq!(is_nullable, "NO"); // Explicitly NOT NULL
-            },
+            }
             "age" => {
                 assert_eq!(data_type, "integer");
                 assert_eq!(is_nullable, "YES");
-            },
+            }
             "salary" => {
                 assert_eq!(data_type, "numeric");
                 assert_eq!(is_nullable, "YES");
-            },
+            }
             "is_active" => {
                 assert_eq!(data_type, "boolean");
                 assert_eq!(is_nullable, "YES");
-            },
+            }
             "created_at" => {
                 assert_eq!(data_type, "timestamp without time zone");
                 assert_eq!(is_nullable, "YES");
-            },
+            }
             _ => panic!("Unexpected column: {}", column_name),
         }
     }
@@ -220,14 +251,22 @@ async fn test_information_schema_columns_wildcard() {
 
     let server = common::setup_test_server_with_init(|db| {
         Box::pin(async move {
-            db.execute("CREATE TABLE simple_table (id INTEGER, name TEXT)").await?;
+            db.execute("CREATE TABLE simple_table (id INTEGER, name TEXT)")
+                .await?;
             Ok(())
         })
-    }).await;
+    })
+    .await;
     let client = &server.client;
 
     // Query with wildcard
-    let rows = client.query("SELECT * FROM information_schema.columns WHERE table_name = 'simple_table'", &[]).await.unwrap();
+    let rows = client
+        .query(
+            "SELECT * FROM information_schema.columns WHERE table_name = 'simple_table'",
+            &[],
+        )
+        .await
+        .unwrap();
 
     // Should return 2 rows (one for each column) with all 44 standard columns
     assert_eq!(rows.len(), 2, "Should have 2 rows for 2 columns");
@@ -243,10 +282,12 @@ async fn test_information_schema_columns_specific_columns() {
 
     let server = common::setup_test_server_with_init(|db| {
         Box::pin(async move {
-            db.execute("CREATE TABLE column_test (id INTEGER PRIMARY KEY, name VARCHAR(50))").await?;
+            db.execute("CREATE TABLE column_test (id INTEGER PRIMARY KEY, name VARCHAR(50))")
+                .await?;
             Ok(())
         })
-    }).await;
+    })
+    .await;
     let client = &server.client;
 
     // Query specific columns

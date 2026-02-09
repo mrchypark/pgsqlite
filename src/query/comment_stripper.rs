@@ -1,9 +1,9 @@
 /// SQL comment stripping utilities
-/// 
+///
 /// This module provides functionality to strip SQL comments from queries
 /// to prevent issues with query parsing and execution.
 /// Strip SQL comments from a query
-/// 
+///
 /// Removes both single-line (--) and multi-line (/* */) comments
 /// while preserving string literals and their contents.
 pub fn strip_sql_comments(query: &str) -> String {
@@ -11,7 +11,17 @@ pub fn strip_sql_comments(query: &str) -> String {
     let mut chars = query.chars().peekable();
     let mut in_string = false;
     let mut string_delimiter = '\0';
-    
+
+    fn trim_trailing_spaces_and_tabs(out: &mut String) {
+        while let Some(&b) = out.as_bytes().last() {
+            if b == b' ' || b == b'\t' {
+                out.pop();
+            } else {
+                break;
+            }
+        }
+    }
+
     while let Some(ch) = chars.next() {
         match ch {
             // Handle string literals
@@ -33,11 +43,12 @@ pub fn strip_sql_comments(query: &str) -> String {
                     result.push(ch);
                 }
             }
-            
+
             // Handle comments only outside of strings
             '-' if !in_string && chars.peek() == Some(&'-') => {
                 // Single-line comment, skip to end of line
                 chars.next(); // consume second '-'
+                trim_trailing_spaces_and_tabs(&mut result);
                 for c in chars.by_ref() {
                     if c == '\n' {
                         result.push('\n'); // preserve line break
@@ -58,12 +69,21 @@ pub fn strip_sql_comments(query: &str) -> String {
                 // Add a space to prevent token concatenation
                 result.push(' ');
             }
-            
+
+            '\n' if !in_string => {
+                trim_trailing_spaces_and_tabs(&mut result);
+                result.push('\n');
+            }
+
             // Pass through everything else
             _ => result.push(ch),
         }
     }
-    
+
+    if !in_string {
+        trim_trailing_spaces_and_tabs(&mut result);
+    }
+
     result
 }
 
@@ -75,9 +95,9 @@ mod tests {
     fn test_strip_single_line_comments() {
         assert_eq!(
             strip_sql_comments("SELECT * FROM users -- get all users"),
-            "SELECT * FROM users "
+            "SELECT * FROM users"
         );
-        
+
         assert_eq!(
             strip_sql_comments("SELECT * FROM users\n-- This is a comment\nWHERE id = 1"),
             "SELECT * FROM users\n\nWHERE id = 1"
@@ -90,7 +110,7 @@ mod tests {
             strip_sql_comments("SELECT /* all columns */ * FROM users"),
             "SELECT   * FROM users"
         );
-        
+
         assert_eq!(
             strip_sql_comments("SELECT * /* multi\nline\ncomment */ FROM users"),
             "SELECT *   FROM users"
@@ -103,12 +123,12 @@ mod tests {
             strip_sql_comments("SELECT '--not a comment' FROM users"),
             "SELECT '--not a comment' FROM users"
         );
-        
+
         assert_eq!(
             strip_sql_comments("SELECT '/* also not a comment */' FROM users"),
             "SELECT '/* also not a comment */' FROM users"
         );
-        
+
         assert_eq!(
             strip_sql_comments("SELECT \"--double quoted\" FROM users"),
             "SELECT \"--double quoted\" FROM users"
@@ -119,9 +139,9 @@ mod tests {
     fn test_escaped_quotes() {
         assert_eq!(
             strip_sql_comments("SELECT 'It''s a test' FROM users -- comment"),
-            "SELECT 'It''s a test' FROM users "
+            "SELECT 'It''s a test' FROM users"
         );
-        
+
         assert_eq!(
             strip_sql_comments("SELECT \"She said \"\"Hello\"\"\" FROM users"),
             "SELECT \"She said \"\"Hello\"\"\" FROM users"
@@ -132,7 +152,7 @@ mod tests {
     fn test_mixed_comments() {
         let query = r#"
 -- Initial comment
-SELECT 
+SELECT
     id, -- user id
     name, /* user name */
     email
@@ -140,18 +160,18 @@ FROM users
 /* WHERE clause */
 WHERE active = true -- only active users
 "#;
-        
+
         let expected = r#"
 
-SELECT 
-    id, 
-    name,  
+SELECT
+    id,
+    name,
     email
 FROM users
- 
-WHERE active = true 
+
+WHERE active = true
 "#;
-        
+
         assert_eq!(strip_sql_comments(query), expected);
     }
 
@@ -171,10 +191,10 @@ WHERE active = true
             strip_sql_comments("SELECT * FROM users WHERE data->>'type' = 'admin'"),
             "SELECT * FROM users WHERE data->>'type' = 'admin'"
         );
-        
+
         assert_eq!(
             strip_sql_comments("SELECT * FROM users WHERE count --> 5"),
-            "SELECT * FROM users WHERE count "
+            "SELECT * FROM users WHERE count"
         );
     }
 }

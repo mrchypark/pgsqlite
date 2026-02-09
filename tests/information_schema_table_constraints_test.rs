@@ -8,25 +8,32 @@ async fn test_information_schema_table_constraints_basic() {
     let server = setup_test_server_with_init(|db| {
         Box::pin(async move {
             // Create test tables with various constraints
-            db.execute(r#"
+            db.execute(
+                r#"
                 CREATE TABLE users (
                     id INTEGER PRIMARY KEY,
                     name VARCHAR(100) NOT NULL,
                     email VARCHAR(255) UNIQUE
                 )
-            "#).await?;
+            "#,
+            )
+            .await?;
 
-            db.execute(r#"
+            db.execute(
+                r#"
                 CREATE TABLE orders (
                     id INTEGER PRIMARY KEY,
                     user_id INTEGER REFERENCES users(id),
                     amount DECIMAL(10,2)
                 )
-            "#).await?;
+            "#,
+            )
+            .await?;
 
             Ok(())
         })
-    }).await;
+    })
+    .await;
     let client = &server.client;
 
     // Query information_schema.table_constraints
@@ -44,17 +51,27 @@ async fn test_information_schema_table_constraints_basic() {
         let table_name: &str = row.get(1);
         let constraint_type: &str = row.get(2);
 
-        found_constraints.insert(format!("{}:{}:{}", table_name, constraint_name, constraint_type));
+        found_constraints.insert(format!(
+            "{}:{}:{}",
+            table_name, constraint_name, constraint_type
+        ));
 
         // Constraint type should be one of the standard types
         assert!(
-            matches!(constraint_type, "PRIMARY KEY" | "UNIQUE" | "FOREIGN KEY" | "CHECK"),
-            "Invalid constraint type: {}", constraint_type
+            matches!(
+                constraint_type,
+                "PRIMARY KEY" | "UNIQUE" | "FOREIGN KEY" | "CHECK"
+            ),
+            "Invalid constraint type: {}",
+            constraint_type
         );
     }
 
     // We should have at least primary key constraints
-    assert!(found_constraints.len() >= 2, "Should have at least primary key constraints for both tables");
+    assert!(
+        found_constraints.len() >= 2,
+        "Should have at least primary key constraints for both tables"
+    );
 }
 
 #[tokio::test]
@@ -63,16 +80,20 @@ async fn test_information_schema_table_constraints_with_filter() {
 
     let server = setup_test_server_with_init(|db| {
         Box::pin(async move {
-            db.execute(r#"
+            db.execute(
+                r#"
                 CREATE TABLE test_table (
                     id INTEGER PRIMARY KEY,
                     code VARCHAR(10) UNIQUE,
                     description TEXT
                 )
-            "#).await?;
+            "#,
+            )
+            .await?;
             Ok(())
         })
-    }).await;
+    })
+    .await;
     let client = &server.client;
 
     // Query with table filter
@@ -97,19 +118,29 @@ async fn test_information_schema_table_constraints_wildcard() {
 
     let server = setup_test_server_with_init(|db| {
         Box::pin(async move {
-            db.execute(r#"
+            db.execute(
+                r#"
                 CREATE TABLE simple_pk (
                     id INTEGER PRIMARY KEY,
                     name TEXT
                 )
-            "#).await?;
+            "#,
+            )
+            .await?;
             Ok(())
         })
-    }).await;
+    })
+    .await;
     let client = &server.client;
 
     // Query with wildcard
-    let rows = client.query("SELECT * FROM information_schema.table_constraints WHERE table_name = 'simple_pk'", &[]).await.unwrap();
+    let rows = client
+        .query(
+            "SELECT * FROM information_schema.table_constraints WHERE table_name = 'simple_pk'",
+            &[],
+        )
+        .await
+        .unwrap();
 
     // Should return all 11 standard columns
     if !rows.is_empty() {
@@ -123,16 +154,20 @@ async fn test_information_schema_table_constraints_types() {
 
     let server = setup_test_server_with_init(|db| {
         Box::pin(async move {
-            db.execute(r#"
+            db.execute(
+                r#"
                 CREATE TABLE constraint_test (
                     id INTEGER PRIMARY KEY,
                     unique_col VARCHAR(50) UNIQUE,
                     parent_id INTEGER REFERENCES constraint_test(id)
                 )
-            "#).await?;
+            "#,
+            )
+            .await?;
             Ok(())
         })
-    }).await;
+    })
+    .await;
     let client = &server.client;
 
     // Query for different constraint types
@@ -141,18 +176,23 @@ async fn test_information_schema_table_constraints_types() {
         &[]
     ).await.unwrap();
 
-    let constraint_types: Vec<&str> = rows.iter()
-        .map(|row| row.get::<_, &str>(0))
-        .collect();
+    let constraint_types: Vec<&str> = rows.iter().map(|row| row.get::<_, &str>(0)).collect();
 
     // Should have at least PRIMARY KEY constraint
-    assert!(constraint_types.contains(&"PRIMARY KEY"), "Should have PRIMARY KEY constraint");
+    assert!(
+        constraint_types.contains(&"PRIMARY KEY"),
+        "Should have PRIMARY KEY constraint"
+    );
 
     // May have other constraint types depending on how they're parsed
     for constraint_type in constraint_types {
         assert!(
-            matches!(constraint_type, "PRIMARY KEY" | "UNIQUE" | "FOREIGN KEY" | "CHECK"),
-            "Invalid constraint type: {}", constraint_type
+            matches!(
+                constraint_type,
+                "PRIMARY KEY" | "UNIQUE" | "FOREIGN KEY" | "CHECK"
+            ),
+            "Invalid constraint type: {}",
+            constraint_type
         );
     }
 }

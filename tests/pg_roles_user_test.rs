@@ -9,7 +9,10 @@ async fn test_pg_roles_view_exists() {
     let db_handler = Arc::new(DbHandler::new(db_path.to_str().unwrap()).unwrap());
 
     // Test basic pg_roles view query
-    let result = db_handler.query("SELECT COUNT(*) FROM pg_roles").await.unwrap();
+    let result = db_handler
+        .query("SELECT COUNT(*) FROM pg_roles")
+        .await
+        .unwrap();
     assert!(!result.rows.is_empty(), "Should get a count result");
 
     let count_bytes = result.rows[0][0].as_ref().unwrap();
@@ -21,9 +24,15 @@ async fn test_pg_roles_view_exists() {
     println!("✅ pg_roles view contains {} roles (expected 3)", count);
 
     // Test column structure
-    let result = db_handler.query("SELECT oid, rolname, rolsuper, rolcanlogin FROM pg_roles LIMIT 1").await.unwrap();
+    let result = db_handler
+        .query("SELECT oid, rolname, rolsuper, rolcanlogin FROM pg_roles LIMIT 1")
+        .await
+        .unwrap();
     assert_eq!(result.columns.len(), 4, "Should have 4 columns");
-    assert_eq!(result.columns, vec!["oid", "rolname", "rolsuper", "rolcanlogin"]);
+    assert_eq!(
+        result.columns,
+        vec!["oid", "rolname", "rolsuper", "rolcanlogin"]
+    );
     println!("✅ pg_roles has correct column structure");
 
     println!("🎉 pg_roles SQLite view test passed!");
@@ -37,7 +46,10 @@ async fn test_pg_user_view_exists() {
     let db_handler = Arc::new(DbHandler::new(db_path.to_str().unwrap()).unwrap());
 
     // Test basic pg_user view query
-    let result = db_handler.query("SELECT COUNT(*) FROM pg_user").await.unwrap();
+    let result = db_handler
+        .query("SELECT COUNT(*) FROM pg_user")
+        .await
+        .unwrap();
     assert!(!result.rows.is_empty(), "Should get a count result");
 
     let count_bytes = result.rows[0][0].as_ref().unwrap();
@@ -49,9 +61,15 @@ async fn test_pg_user_view_exists() {
     println!("✅ pg_user view contains {} users (expected 2)", count);
 
     // Test column structure
-    let result = db_handler.query("SELECT usename, usesysid, usesuper, usecreatedb FROM pg_user LIMIT 1").await.unwrap();
+    let result = db_handler
+        .query("SELECT usename, usesysid, usesuper, usecreatedb FROM pg_user LIMIT 1")
+        .await
+        .unwrap();
     assert_eq!(result.columns.len(), 4, "Should have 4 columns");
-    assert_eq!(result.columns, vec!["usename", "usesysid", "usesuper", "usecreatedb"]);
+    assert_eq!(
+        result.columns,
+        vec!["usename", "usesysid", "usesuper", "usecreatedb"]
+    );
     println!("✅ pg_user has correct column structure");
 
     println!("🎉 pg_user SQLite view test passed!");
@@ -65,7 +83,10 @@ async fn test_pg_roles_specific_queries() {
     let db_handler = Arc::new(DbHandler::new(db_path.to_str().unwrap()).unwrap());
 
     // Test postgres role query (common Django pattern)
-    let result = db_handler.query("SELECT rolname, rolsuper FROM pg_roles WHERE rolname = 'postgres'").await.unwrap();
+    let result = db_handler
+        .query("SELECT rolname, rolsuper FROM pg_roles WHERE rolname = 'postgres'")
+        .await
+        .unwrap();
     assert!(!result.rows.is_empty(), "Should find postgres role");
 
     let rolname_bytes = result.rows[0][0].as_ref().unwrap();
@@ -79,12 +100,18 @@ async fn test_pg_roles_specific_queries() {
     println!("✅ Found postgres role with superuser privileges");
 
     // Test role privilege query (common SQLAlchemy pattern)
-    let result = db_handler.query("SELECT rolname FROM pg_roles WHERE rolcanlogin = 't'").await.unwrap();
+    let result = db_handler
+        .query("SELECT rolname FROM pg_roles WHERE rolcanlogin = 't'")
+        .await
+        .unwrap();
     assert!(result.rows.len() >= 2, "Should find at least 2 login roles");
     println!("✅ Found {} roles that can login", result.rows.len());
 
     // Test public role query (common ORM pattern)
-    let result = db_handler.query("SELECT rolname, rolsuper FROM pg_roles WHERE rolname = 'public'").await.unwrap();
+    let result = db_handler
+        .query("SELECT rolname, rolsuper FROM pg_roles WHERE rolname = 'public'")
+        .await
+        .unwrap();
     assert!(!result.rows.is_empty(), "Should find public role");
 
     let rolsuper_bytes = result.rows[0][1].as_ref().unwrap();
@@ -104,7 +131,10 @@ async fn test_pg_user_specific_queries() {
     let db_handler = Arc::new(DbHandler::new(db_path.to_str().unwrap()).unwrap());
 
     // Test current user query (common Django pattern)
-    let result = db_handler.query("SELECT usename, usesuper FROM pg_user WHERE usename = 'pgsqlite_user'").await.unwrap();
+    let result = db_handler
+        .query("SELECT usename, usesuper FROM pg_user WHERE usename = 'pgsqlite_user'")
+        .await
+        .unwrap();
     assert!(!result.rows.is_empty(), "Should find pgsqlite_user");
 
     let usename_bytes = result.rows[0][0].as_ref().unwrap();
@@ -114,12 +144,24 @@ async fn test_pg_user_specific_queries() {
     println!("✅ Found pgsqlite_user in pg_user");
 
     // Test user privileges query (common Rails pattern)
-    let result = db_handler.query("SELECT usename FROM pg_user WHERE usecreatedb = 't'").await.unwrap();
-    assert!(result.rows.len() >= 2, "Should find users with createdb privilege");
-    println!("✅ Found {} users that can create databases", result.rows.len());
+    let result = db_handler
+        .query("SELECT usename FROM pg_user WHERE usecreatedb = 't'")
+        .await
+        .unwrap();
+    assert!(
+        result.rows.len() >= 2,
+        "Should find users with createdb privilege"
+    );
+    println!(
+        "✅ Found {} users that can create databases",
+        result.rows.len()
+    );
 
     // Test superuser query (common SQLAlchemy pattern)
-    let result = db_handler.query("SELECT usename FROM pg_user WHERE usesuper = 't'").await.unwrap();
+    let result = db_handler
+        .query("SELECT usename FROM pg_user WHERE usesuper = 't'")
+        .await
+        .unwrap();
     assert!(result.rows.len() >= 2, "Should find superusers");
     println!("✅ Found {} superusers", result.rows.len());
 
@@ -134,38 +176,58 @@ async fn test_orm_compatibility_patterns() {
     let db_handler = Arc::new(DbHandler::new(db_path.to_str().unwrap()).unwrap());
 
     // Django user management pattern
-    let result = db_handler.query(r#"
+    let result = db_handler
+        .query(
+            r#"
         SELECT r.rolname, r.rolsuper, r.rolcreatedb, r.rolcanlogin
         FROM pg_roles r
         WHERE r.rolcanlogin = 't'
-    "#).await.unwrap();
+    "#,
+        )
+        .await
+        .unwrap();
     assert!(!result.rows.is_empty(), "Django pattern should work");
     println!("✅ Django user management pattern works");
 
     // SQLAlchemy role-based access control pattern
-    let result = db_handler.query(r#"
+    let result = db_handler
+        .query(
+            r#"
         SELECT rolname, rolsuper, rolbypassrls
         FROM pg_roles
         WHERE rolname IN ('postgres', 'pgsqlite_user')
-    "#).await.unwrap();
+    "#,
+        )
+        .await
+        .unwrap();
     assert_eq!(result.rows.len(), 2, "Should find both users");
     println!("✅ SQLAlchemy role-based access control pattern works");
 
     // Rails authentication integration pattern
-    let result = db_handler.query(r#"
+    let result = db_handler
+        .query(
+            r#"
         SELECT u.usename, u.usesuper, u.usecreatedb
         FROM pg_user u
         ORDER BY u.usename
-    "#).await.unwrap();
+    "#,
+        )
+        .await
+        .unwrap();
     assert!(result.rows.len() >= 2, "Should find multiple users");
     println!("✅ Rails authentication integration pattern works");
 
     // Ecto user introspection pattern
-    let result = db_handler.query(r#"
+    let result = db_handler
+        .query(
+            r#"
         SELECT COUNT(*) as user_count
         FROM pg_user
         WHERE usesuper = 't'
-    "#).await.unwrap();
+    "#,
+        )
+        .await
+        .unwrap();
     let count_bytes = result.rows[0][0].as_ref().unwrap();
     let count_str = String::from_utf8(count_bytes.clone()).unwrap();
     let count: i32 = count_str.parse().unwrap();

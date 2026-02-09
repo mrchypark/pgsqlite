@@ -1,12 +1,12 @@
+use parking_lot::RwLock;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt;
 use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
-use parking_lot::RwLock;
-use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use tracing::{error, warn, info, debug};
+use tracing::{debug, error, info, warn};
 
 #[derive(Error, Debug)]
 pub enum AuditError {
@@ -136,11 +136,7 @@ pub struct SecurityEvent {
 
 impl SecurityEvent {
     /// Create a new security event
-    pub fn new(
-        event_type: SecurityEventType,
-        severity: SecuritySeverity,
-        message: String,
-    ) -> Self {
+    pub fn new(event_type: SecurityEventType, severity: SecuritySeverity, message: String) -> Self {
         Self {
             timestamp: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -212,7 +208,9 @@ impl SecurityEvent {
         let secs = self.timestamp / 1_000_000;
         let micros = self.timestamp % 1_000_000;
 
-        if let Some(datetime) = chrono::DateTime::from_timestamp(secs as i64, (micros * 1000) as u32) {
+        if let Some(datetime) =
+            chrono::DateTime::from_timestamp(secs as i64, (micros * 1000) as u32)
+        {
             datetime.format("%Y-%m-%dT%H:%M:%S%.6fZ").to_string()
         } else {
             format!("invalid-timestamp-{}", self.timestamp)
@@ -221,14 +219,16 @@ impl SecurityEvent {
 
     /// Check if this event should trigger alerting
     pub fn requires_alert(&self) -> bool {
-        matches!(self.severity, SecuritySeverity::High | SecuritySeverity::Critical)
-            || matches!(
-                self.event_type,
-                SecurityEventType::SqlInjectionAttempt
-                    | SecurityEventType::AuthenticationFailure
-                    | SecurityEventType::CircuitBreakerOpen
-                    | SecurityEventType::SecurityPolicyViolation
-            )
+        matches!(
+            self.severity,
+            SecuritySeverity::High | SecuritySeverity::Critical
+        ) || matches!(
+            self.event_type,
+            SecurityEventType::SqlInjectionAttempt
+                | SecurityEventType::AuthenticationFailure
+                | SecurityEventType::CircuitBreakerOpen
+                | SecurityEventType::SecurityPolicyViolation
+        )
     }
 }
 
@@ -296,9 +296,10 @@ impl AuditConfig {
         }
 
         if let Ok(val) = std::env::var("PGSQLITE_AUDIT_BUFFER_SIZE")
-            && let Ok(size) = val.parse::<usize>() {
-                config.buffer_size = size;
-            }
+            && let Ok(size) = val.parse::<usize>()
+        {
+            config.buffer_size = size;
+        }
 
         config
     }
@@ -419,27 +420,32 @@ impl SecurityAuditLogger {
 
     /// Write event in human-readable text format
     fn write_text_event(&self, event: &SecurityEvent) {
-        let client_info = event.client_ip
+        let client_info = event
+            .client_ip
             .map(|ip| format!("client={}", ip))
             .unwrap_or_else(|| "client=unknown".to_string());
 
-        let session_info = event.session_id
+        let session_info = event
+            .session_id
             .as_ref()
             .map(|s| format!("session={}", s))
             .unwrap_or_else(|| "session=none".to_string());
 
-        let user_info = event.username
+        let user_info = event
+            .username
             .as_ref()
             .map(|u| format!("user={}", u))
             .unwrap_or_else(|| "user=unknown".to_string());
 
-        let db_info = event.database
+        let db_info = event
+            .database
             .as_ref()
             .map(|d| format!("db={}", d))
             .unwrap_or_else(|| "db=unknown".to_string());
 
         let query_info = if self.config.log_queries {
-            event.query
+            event
+                .query
                 .as_ref()
                 .map(|q| format!("query=\"{}\"", q))
                 .unwrap_or_default()
@@ -448,7 +454,8 @@ impl SecurityAuditLogger {
         };
 
         let metadata_info = if !event.metadata.is_empty() {
-            let metadata_str: String = event.metadata
+            let metadata_str: String = event
+                .metadata
                 .iter()
                 .map(|(k, v)| format!("{}={}", k, v))
                 .collect::<Vec<_>>()
@@ -525,7 +532,10 @@ impl SecurityAuditLogger {
     pub fn flush_buffer(&self) {
         let mut buffer = self.event_buffer.write();
         if !buffer.is_empty() {
-            debug!("Force flushing audit event buffer with {} events", buffer.len());
+            debug!(
+                "Force flushing audit event buffer with {} events",
+                buffer.len()
+            );
             buffer.clear();
 
             let mut stats = self.stats.write();
@@ -597,6 +607,28 @@ pub mod events {
         log_security_event(event);
     }
 
+    pub fn authentication_failure(
+        client_ip: Option<IpAddr>,
+        username: &str,
+        database: &str,
+        reason: &str,
+    ) {
+        let mut event = SecurityEvent::new(
+            SecurityEventType::AuthenticationFailure,
+            SecuritySeverity::High,
+            format!("User '{}' authentication failed", username),
+        )
+        .with_username(username.to_string())
+        .with_database(database.to_string())
+        .with_metadata("reason".to_string(), reason.to_string());
+
+        if let Some(ip) = client_ip {
+            event = event.with_client_ip(ip);
+        }
+
+        log_security_event(event);
+    }
+
     pub fn sql_injection_attempt(
         client_ip: Option<IpAddr>,
         session_id: Option<String>,
@@ -626,7 +658,10 @@ pub mod events {
         let mut event = SecurityEvent::new(
             SecurityEventType::RateLimitExceeded,
             SecuritySeverity::Warning,
-            format!("Rate limit exceeded: {} (current: {})", limit_type, current_rate),
+            format!(
+                "Rate limit exceeded: {} (current: {})",
+                limit_type, current_rate
+            ),
         )
         .with_metadata("limit_type".to_string(), limit_type.to_string())
         .with_metadata("current_rate".to_string(), current_rate.to_string());
@@ -726,7 +761,10 @@ mod tests {
         assert!(event.client_ip.is_some());
         assert_eq!(event.username, Some("testuser".to_string()));
         assert_eq!(event.database, Some("testdb".to_string()));
-        assert_eq!(event.metadata.get("test_key"), Some(&"test_value".to_string()));
+        assert_eq!(
+            event.metadata.get("test_key"),
+            Some(&"test_value".to_string())
+        );
     }
 
     #[test]
@@ -813,6 +851,7 @@ mod tests {
 
     #[test]
     fn test_config_from_env() {
+        let _guard = crate::utils::test_env::lock_env();
         unsafe {
             std::env::set_var("PGSQLITE_AUDIT_ENABLED", "true");
             std::env::set_var("PGSQLITE_AUDIT_JSON_FORMAT", "false");

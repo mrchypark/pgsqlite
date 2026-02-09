@@ -19,10 +19,17 @@ async fn test_information_schema_comprehensive() {
     println!("=== Testing information_schema.schemata ===");
 
     // Test schemata
-    let schema_rows = client.query("SELECT schema_name FROM information_schema.schemata ORDER BY schema_name", &[]).await.unwrap();
+    let schema_rows = client
+        .query(
+            "SELECT schema_name FROM information_schema.schemata ORDER BY schema_name",
+            &[],
+        )
+        .await
+        .unwrap();
     println!("Found {} schemas", schema_rows.len());
 
-    let schema_names: Vec<String> = schema_rows.iter()
+    let schema_names: Vec<String> = schema_rows
+        .iter()
         .map(|row| row.get::<_, String>(0))
         .collect();
     println!("Schema names: {:?}", schema_names);
@@ -84,7 +91,10 @@ async fn test_information_schema_comprehensive() {
         let table_type: String = row.get(1);
         let is_insertable: String = row.get(2);
 
-        println!("  {}: {} (insertable: {})", table_name, table_type, is_insertable);
+        println!(
+            "  {}: {} (insertable: {})",
+            table_name, table_type, is_insertable
+        );
 
         if table_name == "users" {
             assert_eq!(table_type, "BASE TABLE");
@@ -98,11 +108,17 @@ async fn test_information_schema_comprehensive() {
     println!("=== Testing wildcard queries ===");
 
     // Test wildcard queries work
-    let all_schemata = client.query("SELECT * FROM information_schema.schemata", &[]).await.unwrap();
+    let all_schemata = client
+        .query("SELECT * FROM information_schema.schemata", &[])
+        .await
+        .unwrap();
     assert!(all_schemata.len() >= 3);
     assert!(all_schemata[0].len() >= 3); // Should have multiple columns
 
-    let all_tables = client.query("SELECT * FROM information_schema.tables LIMIT 1", &[]).await.unwrap();
+    let all_tables = client
+        .query("SELECT * FROM information_schema.tables LIMIT 1", &[])
+        .await
+        .unwrap();
     assert!(!all_tables.is_empty());
     assert!(all_tables[0].len() >= 4); // Should have multiple columns
 

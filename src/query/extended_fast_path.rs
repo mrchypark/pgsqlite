@@ -1,13 +1,13 @@
+use crate::PgSqliteError;
+use crate::cache::GLOBAL_PARAM_VALUE_CACHE;
 use crate::protocol::BackendMessage;
 use crate::query::ParameterParser;
 use crate::session::{DbHandler, SessionState};
 use crate::types::{DecimalHandler, PgType};
-use crate::cache::GLOBAL_PARAM_VALUE_CACHE;
-use crate::PgSqliteError;
-use tokio_util::codec::Framed;
 use futures::SinkExt;
 use std::sync::Arc;
-use tracing::{info, debug};
+use tokio_util::codec::Framed;
+use tracing::{debug, info};
 
 /// Optimized parameter binding that avoids string substitution
 pub struct ExtendedFastPath;
@@ -17,11 +17,12 @@ impl ExtendedFastPath {
     fn extract_table_from_query(query: &str) -> Option<String> {
         // Simple regex to extract table name from FROM clause
         let from_regex = regex::Regex::new(r"(?i)FROM\s+(\w+)").ok()?;
-        from_regex.captures(query)
+        from_regex
+            .captures(query)
             .and_then(|caps| caps.get(1))
             .map(|m| m.as_str().to_string())
     }
-    
+
     /// Execute a parameterized query using prepared statements directly
     #[allow(clippy::too_many_arguments)]
     pub async fn execute_with_params<T>(
@@ -41,16 +42,20 @@ impl ExtendedFastPath {
         T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
     {
         // Convert parameters to rusqlite values with caching, using original types for proper conversion
-        let rusqlite_params = match Self::convert_parameters_cached(query, bound_values, param_formats, param_types, original_types) {
-            Ok(params) => {
-                params
-            },
+        let rusqlite_params = match Self::convert_parameters_cached(
+            query,
+            bound_values,
+            param_formats,
+            param_types,
+            original_types,
+        ) {
+            Ok(params) => params,
             Err(_) => {
                 // Parameter conversion failed, fall back to normal path
                 return Ok(false); // Fall back to normal path
             }
         };
-        
+
         // Execute based on query type
         match query_type {
             QueryType::Select => {
@@ -62,20 +67,35 @@ impl ExtendedFastPath {
                     // TODO: Implement proper binary encoding for result formats
                     return Ok(false);
                 }
-                match Self::execute_select_with_params(framed, db, session, portal_name, query, rusqlite_params, result_formats).await {
-                    Ok(()) => {
-                        Ok(true)
-                    },
+                match Self::execute_select_with_params(
+                    framed,
+                    db,
+                    session,
+                    portal_name,
+                    query,
+                    rusqlite_params,
+                    result_formats,
+                )
+                .await
+                {
+                    Ok(()) => Ok(true),
                     Err(_e) => {
                         Ok(false) // Fall back to normal path
                     }
                 }
             }
             QueryType::Insert | QueryType::Update | QueryType::Delete => {
-                match Self::execute_dml_with_params(framed, db, session, query, rusqlite_params, query_type).await {
-                    Ok(()) => {
-                        Ok(true)
-                    },
+                match Self::execute_dml_with_params(
+                    framed,
+                    db,
+                    session,
+                    query,
+                    rusqlite_params,
+                    query_type,
+                )
+                .await
+                {
+                    Ok(()) => Ok(true),
                     Err(_e) => {
                         Ok(false) // Fall back to normal path
                     }
@@ -84,13 +104,13 @@ impl ExtendedFastPath {
             _ => Ok(false), // Fall back for other query types
         }
     }
-    
+
     /// Infer parameter types from CAST expressions and function calls in the query
     fn infer_types_from_query(query: &str, param_count: usize) -> Vec<i32> {
         let mut inferred_types = vec![0; param_count];
-        
+
         // Type inference for parameters
-        
+
         // Look for CAST($N AS TYPE) patterns
         for i in 1..=param_count {
             if let Some(cast_start) = query.find(&format!("CAST(${i} AS ")) {
@@ -104,7 +124,7 @@ impl ExtendedFastPath {
                     }
                 }
             }
-            
+
             // Look for pgsqlite datetime function patterns
             let datetime_functions = [
                 ("pg_timestamp_from_text($", PgType::Timestamp.to_oid()),
@@ -114,7 +134,7 @@ impl ExtendedFastPath {
                 ("pg_timetz_from_text($", PgType::Timetz.to_oid()),
                 ("pg_interval_from_text($", PgType::Interval.to_oid()),
             ];
-            
+
             for (func_pattern, type_oid) in datetime_functions {
                 let pattern = format!("{}{}", func_pattern, i);
                 // Checking for datetime function pattern
@@ -124,11 +144,11 @@ impl ExtendedFastPath {
                 }
             }
         }
-        
+
         // Type inference complete
         inferred_types
     }
-    
+
     /// Convert parameters using cache to avoid repeated conversions
     fn convert_parameters_cached(
         query: &str,
@@ -139,7 +159,7 @@ impl ExtendedFastPath {
     ) -> Result<Vec<rusqlite::types::Value>, PgSqliteError> {
         // First, try to infer types from CAST expressions in the query
         let inferred_types = Self::infer_types_from_query(query, bound_values.len());
-        
+
         // Use inferred types where available, fall back to original types
         let effective_types: Vec<i32> = (0..bound_values.len())
             .map(|i| {
@@ -151,30 +171,30 @@ impl ExtendedFastPath {
             })
             .collect();
         let mut params = Vec::with_capacity(bound_values.len());
-        
+
         for (i, value) in bound_values.iter().enumerate() {
             match value {
                 None => params.push(rusqlite::types::Value::Null),
                 Some(bytes) => {
                     let format = param_formats.get(i).copied().unwrap_or(0);
                     let effective_type = effective_types[i];
-                    
+
                     // Use cache for parameter value conversion, using effective type (includes CAST inference)
                     let converted = GLOBAL_PARAM_VALUE_CACHE.get_or_convert(
                         bytes,
                         effective_type,
                         format,
-                        || Self::convert_parameter_value(bytes, format, effective_type)
+                        || Self::convert_parameter_value(bytes, format, effective_type),
                     )?;
-                    
+
                     params.push(converted);
                 }
             }
         }
-        
+
         Ok(params)
     }
-    
+
     /// Convert a single parameter value
     fn convert_parameter_value(
         bytes: &[u8],
@@ -182,12 +202,12 @@ impl ExtendedFastPath {
         param_type: i32,
     ) -> Result<rusqlite::types::Value, PgSqliteError> {
         // Converting parameter value
-        
+
         if format == 0 {
             // Text format
             let text = std::str::from_utf8(bytes)
                 .map_err(|_| PgSqliteError::Protocol("Invalid UTF-8 in parameter".to_string()))?;
-            
+
             match param_type {
                 t if t == PgType::Bool.to_oid() => {
                     // BOOL
@@ -197,7 +217,10 @@ impl ExtendedFastPath {
                     };
                     Ok(rusqlite::types::Value::Integer(val))
                 }
-                t if t == PgType::Int8.to_oid() || t == PgType::Int4.to_oid() || t == PgType::Int2.to_oid() => {
+                t if t == PgType::Int8.to_oid()
+                    || t == PgType::Int4.to_oid()
+                    || t == PgType::Int2.to_oid() =>
+                {
                     // INT8, INT4, INT2
                     text.parse::<i64>()
                         .map(rusqlite::types::Value::Integer)
@@ -220,45 +243,62 @@ impl ExtendedFastPath {
                     // DATE - convert to days since epoch (INTEGER)
                     match crate::types::ValueConverter::convert_date_to_unix(text) {
                         Ok(days_str) => {
-                            let days = days_str.parse::<i64>()
-                                .map_err(|_| PgSqliteError::Protocol(format!("Invalid date days: {days_str}")))?;
+                            let days = days_str.parse::<i64>().map_err(|_| {
+                                PgSqliteError::Protocol(format!("Invalid date days: {days_str}"))
+                            })?;
                             Ok(rusqlite::types::Value::Integer(days))
                         }
-                        Err(e) => Err(PgSqliteError::Protocol(format!("Invalid date: {e}")))
+                        Err(e) => Err(PgSqliteError::Protocol(format!("Invalid date: {e}"))),
                     }
                 }
                 t if t == PgType::Time.to_oid() => {
                     // TIME - convert to microseconds since midnight (INTEGER)
                     match crate::types::ValueConverter::convert_time_to_seconds(text) {
                         Ok(micros_str) => {
-                            let micros = micros_str.parse::<i64>()
-                                .map_err(|_| PgSqliteError::Protocol(format!("Invalid time microseconds: {micros_str}")))?;
+                            let micros = micros_str.parse::<i64>().map_err(|_| {
+                                PgSqliteError::Protocol(format!(
+                                    "Invalid time microseconds: {micros_str}"
+                                ))
+                            })?;
                             Ok(rusqlite::types::Value::Integer(micros))
                         }
-                        Err(e) => Err(PgSqliteError::Protocol(format!("Invalid time: {e}")))
+                        Err(e) => Err(PgSqliteError::Protocol(format!("Invalid time: {e}"))),
                     }
                 }
                 t if t == PgType::Timestamp.to_oid() => {
                     // TIMESTAMP - convert to microseconds since epoch (INTEGER)
                     match crate::types::ValueConverter::convert_timestamp_to_unix(text) {
                         Ok(micros_str) => {
-                            let micros = micros_str.parse::<i64>()
-                                .map_err(|_| PgSqliteError::Protocol(format!("Invalid timestamp microseconds: {micros_str}")))?;
+                            let micros = micros_str.parse::<i64>().map_err(|_| {
+                                PgSqliteError::Protocol(format!(
+                                    "Invalid timestamp microseconds: {micros_str}"
+                                ))
+                            })?;
                             Ok(rusqlite::types::Value::Integer(micros))
                         }
-                        Err(e) => Err(PgSqliteError::Protocol(format!("Invalid timestamp: {e}")))
+                        Err(e) => Err(PgSqliteError::Protocol(format!("Invalid timestamp: {e}"))),
                     }
                 }
-                t if t == PgType::Timestamptz.to_oid() || t == PgType::Timetz.to_oid() || t == PgType::Interval.to_oid() => {
+                t if t == PgType::Timestamptz.to_oid()
+                    || t == PgType::Timetz.to_oid()
+                    || t == PgType::Interval.to_oid() =>
+                {
                     // Other datetime types - convert to INTEGER (microseconds)
                     // For now, store as text until we implement proper conversion
                     // TODO: Implement proper conversion for TIMESTAMPTZ, TIMETZ, INTERVAL
                     Ok(rusqlite::types::Value::Text(text.to_string()))
                 }
-                t if t == PgType::Money.to_oid() || t == PgType::Macaddr.to_oid() || t == PgType::Macaddr8.to_oid() ||
-                     t == PgType::Inet.to_oid() || t == PgType::Cidr.to_oid() || t == PgType::Int4range.to_oid() ||
-                     t == PgType::Int8range.to_oid() || t == PgType::Numrange.to_oid() || t == PgType::Bit.to_oid() ||
-                     t == PgType::Varbit.to_oid() => {
+                t if t == PgType::Money.to_oid()
+                    || t == PgType::Macaddr.to_oid()
+                    || t == PgType::Macaddr8.to_oid()
+                    || t == PgType::Inet.to_oid()
+                    || t == PgType::Cidr.to_oid()
+                    || t == PgType::Int4range.to_oid()
+                    || t == PgType::Int8range.to_oid()
+                    || t == PgType::Numrange.to_oid()
+                    || t == PgType::Bit.to_oid()
+                    || t == PgType::Varbit.to_oid() =>
+                {
                     // Special types that are mapped to TEXT
                     Ok(rusqlite::types::Value::Text(text.to_string()))
                 }
@@ -284,24 +324,31 @@ impl ExtendedFastPath {
                             if val >= i16::MIN as i32 && val <= i16::MAX as i32 {
                                 Ok(rusqlite::types::Value::Integer(val as i64))
                             } else {
-                                Err(PgSqliteError::Protocol(format!("INT4 value {} too large for INT2", val)))
+                                Err(PgSqliteError::Protocol(format!(
+                                    "INT4 value {} too large for INT2",
+                                    val
+                                )))
                             }
                         }
                         8 => {
                             // INT8 -> INT2: check if it fits in INT2 range
                             let val = i64::from_be_bytes([
-                                bytes[0], bytes[1], bytes[2], bytes[3],
-                                bytes[4], bytes[5], bytes[6], bytes[7]
+                                bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5],
+                                bytes[6], bytes[7],
                             ]);
                             if val >= i16::MIN as i64 && val <= i16::MAX as i64 {
                                 Ok(rusqlite::types::Value::Integer(val))
                             } else {
-                                Err(PgSqliteError::Protocol(format!("INT8 value {} too large for INT2", val)))
+                                Err(PgSqliteError::Protocol(format!(
+                                    "INT8 value {} too large for INT2",
+                                    val
+                                )))
                             }
                         }
-                        _ => {
-                            Err(PgSqliteError::Protocol(format!("Invalid INT2 binary format: {} bytes", bytes.len())))
-                        }
+                        _ => Err(PgSqliteError::Protocol(format!(
+                            "Invalid INT2 binary format: {} bytes",
+                            bytes.len()
+                        ))),
                     }
                 }
                 t if t == PgType::Int4.to_oid() => {
@@ -315,24 +362,29 @@ impl ExtendedFastPath {
                         }
                         4 => {
                             // Standard INT4
-                            let val = i32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as i64;
+                            let val =
+                                i32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as i64;
                             Ok(rusqlite::types::Value::Integer(val))
                         }
                         8 => {
                             // INT8 -> INT4: check if it fits in INT4 range
                             let val = i64::from_be_bytes([
-                                bytes[0], bytes[1], bytes[2], bytes[3],
-                                bytes[4], bytes[5], bytes[6], bytes[7]
+                                bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5],
+                                bytes[6], bytes[7],
                             ]);
                             if val >= i32::MIN as i64 && val <= i32::MAX as i64 {
                                 Ok(rusqlite::types::Value::Integer(val))
                             } else {
-                                Err(PgSqliteError::Protocol(format!("INT8 value {} too large for INT4", val)))
+                                Err(PgSqliteError::Protocol(format!(
+                                    "INT8 value {} too large for INT4",
+                                    val
+                                )))
                             }
                         }
-                        _ => {
-                            Err(PgSqliteError::Protocol(format!("Invalid INT4 binary format: {} bytes", bytes.len())))
-                        }
+                        _ => Err(PgSqliteError::Protocol(format!(
+                            "Invalid INT4 binary format: {} bytes",
+                            bytes.len()
+                        ))),
                     }
                 }
                 t if t == PgType::Int8.to_oid() => {
@@ -346,21 +398,23 @@ impl ExtendedFastPath {
                         }
                         4 => {
                             // INT4 -> INT8: sign extend from 32-bit to 64-bit
-                            let val = i32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as i64;
+                            let val =
+                                i32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as i64;
                             // Converting 4-byte to INT8
                             Ok(rusqlite::types::Value::Integer(val))
                         }
                         8 => {
                             // Standard INT8
                             let val = i64::from_be_bytes([
-                                bytes[0], bytes[1], bytes[2], bytes[3],
-                                bytes[4], bytes[5], bytes[6], bytes[7]
+                                bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5],
+                                bytes[6], bytes[7],
                             ]);
                             Ok(rusqlite::types::Value::Integer(val))
                         }
-                        _ => {
-                            Err(PgSqliteError::Protocol(format!("Invalid INT8 binary format: {} bytes", bytes.len())))
-                        }
+                        _ => Err(PgSqliteError::Protocol(format!(
+                            "Invalid INT8 binary format: {} bytes",
+                            bytes.len()
+                        ))),
                     }
                 }
                 t if t == PgType::Float4.to_oid() => {
@@ -370,27 +424,33 @@ impl ExtendedFastPath {
                         let val = f32::from_bits(bits) as f64;
                         Ok(rusqlite::types::Value::Real(val))
                     } else {
-                        Err(PgSqliteError::Protocol("Invalid FLOAT4 binary format".to_string()))
+                        Err(PgSqliteError::Protocol(
+                            "Invalid FLOAT4 binary format".to_string(),
+                        ))
                     }
                 }
                 t if t == PgType::Float8.to_oid() => {
                     // FLOAT8
                     if bytes.len() == 8 {
                         let bits = u64::from_be_bytes([
-                            bytes[0], bytes[1], bytes[2], bytes[3],
-                            bytes[4], bytes[5], bytes[6], bytes[7]
+                            bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6],
+                            bytes[7],
                         ]);
                         let val = f64::from_bits(bits);
                         Ok(rusqlite::types::Value::Real(val))
                     } else {
-                        Err(PgSqliteError::Protocol("Invalid FLOAT8 binary format".to_string()))
+                        Err(PgSqliteError::Protocol(
+                            "Invalid FLOAT8 binary format".to_string(),
+                        ))
                     }
                 }
                 t if t == PgType::Numeric.to_oid() => {
                     // NUMERIC
                     match DecimalHandler::decode_numeric(bytes) {
                         Ok(decimal) => Ok(rusqlite::types::Value::Text(decimal.to_string())),
-                        Err(e) => Err(PgSqliteError::Protocol(format!("Invalid binary NUMERIC: {e}"))),
+                        Err(e) => Err(PgSqliteError::Protocol(format!(
+                            "Invalid binary NUMERIC: {e}"
+                        ))),
                     }
                 }
                 t if t == PgType::Money.to_oid() => {
@@ -401,15 +461,18 @@ impl ExtendedFastPath {
                     } else if bytes.len() == 8 {
                         // Fallback to binary format (int64 representing cents * 100)
                         let microdollars = i64::from_be_bytes([
-                            bytes[0], bytes[1], bytes[2], bytes[3],
-                            bytes[4], bytes[5], bytes[6], bytes[7]
+                            bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6],
+                            bytes[7],
                         ]);
                         // Convert microdollars to dollar string format
                         let dollars = microdollars as f64 / 100.0;
                         let text = format!("${dollars:.2}");
                         Ok(rusqlite::types::Value::Text(text))
                     } else {
-                        Err(PgSqliteError::Protocol(format!("Invalid MONEY format, {} bytes", bytes.len())))
+                        Err(PgSqliteError::Protocol(format!(
+                            "Invalid MONEY format, {} bytes",
+                            bytes.len()
+                        )))
                     }
                 }
                 t if t == PgType::Text.to_oid() || t == PgType::Varchar.to_oid() => {
@@ -425,63 +488,82 @@ impl ExtendedFastPath {
                 t if t == PgType::Date.to_oid() => {
                     // DATE - 4 bytes, days since 2000-01-01
                     if bytes.len() == 4 {
-                        let days_since_2000 = i32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+                        let days_since_2000 =
+                            i32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
                         // Convert to days since 1970-01-01 (Unix epoch)
                         let days_since_1970 = days_since_2000 + 10957; // 10957 days between 1970-01-01 and 2000-01-01
                         Ok(rusqlite::types::Value::Integer(days_since_1970 as i64))
                     } else {
-                        Err(PgSqliteError::Protocol("Invalid DATE binary format".to_string()))
+                        Err(PgSqliteError::Protocol(
+                            "Invalid DATE binary format".to_string(),
+                        ))
                     }
                 }
                 t if t == PgType::Time.to_oid() || t == PgType::Timetz.to_oid() => {
                     // TIME - 8 bytes, microseconds since midnight
                     if bytes.len() == 8 {
                         let micros = i64::from_be_bytes([
-                            bytes[0], bytes[1], bytes[2], bytes[3],
-                            bytes[4], bytes[5], bytes[6], bytes[7]
+                            bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6],
+                            bytes[7],
                         ]);
                         Ok(rusqlite::types::Value::Integer(micros))
                     } else {
-                        Err(PgSqliteError::Protocol("Invalid TIME binary format".to_string()))
+                        Err(PgSqliteError::Protocol(
+                            "Invalid TIME binary format".to_string(),
+                        ))
                     }
                 }
                 t if t == PgType::Timestamp.to_oid() || t == PgType::Timestamptz.to_oid() => {
                     // TIMESTAMP - 8 bytes, microseconds since 2000-01-01
                     if bytes.len() == 8 {
                         let pg_micros = i64::from_be_bytes([
-                            bytes[0], bytes[1], bytes[2], bytes[3],
-                            bytes[4], bytes[5], bytes[6], bytes[7]
+                            bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6],
+                            bytes[7],
                         ]);
                         // Convert to microseconds since 1970-01-01 (Unix epoch)
                         const PG_EPOCH_OFFSET: i64 = 946_684_800 * 1_000_000; // microseconds between 1970-01-01 and 2000-01-01
                         let unix_micros = pg_micros + PG_EPOCH_OFFSET;
                         Ok(rusqlite::types::Value::Integer(unix_micros))
                     } else {
-                        Err(PgSqliteError::Protocol("Invalid TIMESTAMP binary format".to_string()))
+                        Err(PgSqliteError::Protocol(
+                            "Invalid TIMESTAMP binary format".to_string(),
+                        ))
                     }
                 }
                 t if t == PgType::Interval.to_oid() => {
                     // INTERVAL - 16 bytes: 8 bytes microseconds + 4 bytes days + 4 bytes months
                     if bytes.len() == 16 {
                         let micros = i64::from_be_bytes([
-                            bytes[0], bytes[1], bytes[2], bytes[3],
-                            bytes[4], bytes[5], bytes[6], bytes[7]
+                            bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6],
+                            bytes[7],
                         ]);
                         let days = i32::from_be_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]);
-                        let _months = i32::from_be_bytes([bytes[12], bytes[13], bytes[14], bytes[15]]);
-                        
+                        let _months =
+                            i32::from_be_bytes([bytes[12], bytes[13], bytes[14], bytes[15]]);
+
                         // Convert to total microseconds (simple intervals only)
                         let total_micros = micros + (days as i64 * 86400 * 1_000_000);
                         Ok(rusqlite::types::Value::Integer(total_micros))
                     } else {
-                        Err(PgSqliteError::Protocol("Invalid INTERVAL binary format".to_string()))
+                        Err(PgSqliteError::Protocol(
+                            "Invalid INTERVAL binary format".to_string(),
+                        ))
                     }
                 }
-                t if t == PgType::Macaddr.to_oid() || t == PgType::Macaddr8.to_oid() || t == PgType::Inet.to_oid() ||
-                     t == PgType::Cidr.to_oid() || t == PgType::Int4range.to_oid() || t == PgType::Int8range.to_oid() ||
-                     t == PgType::Numrange.to_oid() || t == PgType::Bit.to_oid() || t == PgType::Varbit.to_oid() => {
+                t if t == PgType::Macaddr.to_oid()
+                    || t == PgType::Macaddr8.to_oid()
+                    || t == PgType::Inet.to_oid()
+                    || t == PgType::Cidr.to_oid()
+                    || t == PgType::Int4range.to_oid()
+                    || t == PgType::Int8range.to_oid()
+                    || t == PgType::Numrange.to_oid()
+                    || t == PgType::Bit.to_oid()
+                    || t == PgType::Varbit.to_oid() =>
+                {
                     // Other special types - for now, error out so we can implement them properly
-                    Err(PgSqliteError::Protocol(format!("Binary format not implemented for type {param_type}")))
+                    Err(PgSqliteError::Protocol(format!(
+                        "Binary format not implemented for type {param_type}"
+                    )))
                 }
                 0 => {
                     // Type not specified (OID 0) - try to infer from binary format
@@ -489,16 +571,17 @@ impl ExtendedFastPath {
                         // 8 bytes could be INT8, FLOAT8, TIME, or TIMESTAMP
                         // For now, try to parse as timestamp (common in SQLAlchemy)
                         let pg_micros = i64::from_be_bytes([
-                            bytes[0], bytes[1], bytes[2], bytes[3],
-                            bytes[4], bytes[5], bytes[6], bytes[7]
+                            bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6],
+                            bytes[7],
                         ]);
                         // Check if this looks like a PostgreSQL timestamp (year 1900-2100)
                         const PG_EPOCH_OFFSET: i64 = 946_684_800 * 1_000_000;
                         let unix_micros = pg_micros + PG_EPOCH_OFFSET;
                         let seconds = unix_micros / 1_000_000;
-                        
+
                         // If it's a reasonable timestamp (between year 1970 and 2100), treat as timestamp
-                        if (0..4_102_444_800).contains(&seconds) { // 2100-01-01
+                        if (0..4_102_444_800).contains(&seconds) {
+                            // 2100-01-01
                             // Inferring as TIMESTAMP
                             Ok(rusqlite::types::Value::Integer(unix_micros))
                         } else {
@@ -508,7 +591,8 @@ impl ExtendedFastPath {
                         }
                     } else if bytes.len() == 4 {
                         // 4 bytes could be INT4 or FLOAT4, try INT4 first
-                        let val = i32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as i64;
+                        let val =
+                            i32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as i64;
                         // Inferring as INT4
                         Ok(rusqlite::types::Value::Integer(val))
                     } else if bytes.len() == 2 {
@@ -530,7 +614,7 @@ impl ExtendedFastPath {
             }
         }
     }
-    
+
     async fn execute_select_with_params<T>(
         framed: &mut Framed<T, crate::protocol::PostgresCodec>,
         db: &Arc<DbHandler>,
@@ -544,51 +628,61 @@ impl ExtendedFastPath {
         T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
     {
         // Use DbHandler's fast path method which has access to the connection
-        let response = match db.try_execute_fast_path_with_params(query, &params, &session.id).await {
-            Ok(Some(resp)) => {
-                resp
-            },
+        let response = match db
+            .try_execute_fast_path_with_params(query, &params, &session.id)
+            .await
+        {
+            Ok(Some(resp)) => resp,
             Ok(None) => {
                 return Err(PgSqliteError::Protocol("FastPathFallback".to_string()));
-            },
+            }
             Err(e) => {
                 return Err(e);
-            },
+            }
         };
-        
+
         // Check if we need to send RowDescription
         let send_row_desc = {
             let portals = session.portals.read().await;
             let portal = portals.get(portal_name).unwrap();
             let statements = session.prepared_statements.read().await;
             let stmt = statements.get(&portal.statement_name).unwrap();
-            
+
             // Check if field descriptions are empty OR suspiciously all TEXT for non-parameter columns
             let is_empty = stmt.field_descriptions.is_empty();
             let looks_suspicious = if !is_empty && !stmt.field_descriptions.is_empty() {
                 // Check if all non-parameter columns are TEXT (OID 25)
-                let non_param_types: Vec<_> = stmt.field_descriptions.iter()
-                    .filter(|fd| !fd.name.starts_with('$') && fd.name != "?column?" && fd.name != "NULL")
+                let non_param_types: Vec<_> = stmt
+                    .field_descriptions
+                    .iter()
+                    .filter(|fd| {
+                        !fd.name.starts_with('$') && fd.name != "?column?" && fd.name != "NULL"
+                    })
                     .map(|fd| fd.type_oid)
                     .collect();
-                
+
                 // If we have non-parameter columns and they're ALL TEXT, that's suspicious
                 !non_param_types.is_empty() && non_param_types.iter().all(|&oid| oid == 25)
             } else {
                 false
             };
-            
+
             if looks_suspicious {
                 if query.contains("orders") && query.contains("customer_id") {
                     info!("Fast path: SUSPICIOUS field descriptions detected for orders query!");
-                    info!("Fast path: Field descriptions: {:?}", stmt.field_descriptions);
+                    info!(
+                        "Fast path: Field descriptions: {:?}",
+                        stmt.field_descriptions
+                    );
                 }
-                debug!("Fast path: Existing field descriptions look suspicious (all TEXT), will override");
+                debug!(
+                    "Fast path: Existing field descriptions look suspicious (all TEXT), will override"
+                );
             }
-            
+
             (is_empty || looks_suspicious) && !response.columns.is_empty()
         };
-        
+
         if send_row_desc {
             // Special logging for the problematic query
             if query.contains("orders") && query.contains("customer_id") {
@@ -596,30 +690,38 @@ impl ExtendedFastPath {
                 info!("Fast path: Query: {}", query);
                 info!("Fast path: Columns: {:?}", response.columns);
             }
-            debug!("Fast path: Need to send RowDescription for {} columns", response.columns.len());
+            debug!(
+                "Fast path: Need to send RowDescription for {} columns",
+                response.columns.len()
+            );
             debug!("Fast path: Query: {}", query);
             debug!("Fast path: Columns: {:?}", response.columns);
-            
+
             // Build field descriptions based on the response columns and inferred types
             let portal_inferred_types = {
                 let portals = session.portals.read().await;
                 let portal = portals.get(portal_name).unwrap();
                 portal.inferred_param_types.clone()
             };
-            
+
             // Build field descriptions with proper type inference from schema
             let mut fields: Vec<crate::protocol::FieldDescription> = Vec::new();
-            
+
             for (i, col_name) in response.columns.iter().enumerate() {
                 // For parameter columns, use inferred type
-                let type_oid = if col_name.starts_with('$') || col_name == "?column?" || col_name == "NULL" {
+                let type_oid = if col_name.starts_with('$')
+                    || col_name == "?column?"
+                    || col_name == "NULL"
+                {
                     if let Some(ref inferred_types) = portal_inferred_types {
                         let param_idx = if let Some(stripped) = col_name.strip_prefix('$') {
                             stripped.parse::<usize>().ok().map(|n| n - 1).unwrap_or(i)
                         } else {
                             i
                         };
-                        *inferred_types.get(param_idx).unwrap_or(&PgType::Text.to_oid())
+                        *inferred_types
+                            .get(param_idx)
+                            .unwrap_or(&PgType::Text.to_oid())
                     } else {
                         PgType::Text.to_oid()
                     }
@@ -627,50 +729,83 @@ impl ExtendedFastPath {
                     // Try to infer type from column name and schema
                     // Handle aliased columns like "orders_total_amount" -> table="orders", column="total_amount"
                     let mut inferred_type = PgType::Text.to_oid();
-                    
+
                     // Try to parse table_column pattern
                     if col_name.contains('_') {
                         // Split on first underscore to get potential table name
                         if let Some(underscore_pos) = col_name.find('_') {
                             let potential_table = &col_name[..underscore_pos];
                             let potential_column = &col_name[underscore_pos + 1..];
-                            
+
                             // Try to look up the type from schema
-                            if let Ok(Some(pg_type_str)) = db.get_schema_type_with_session(&session.id, potential_table, potential_column).await {
-                                let new_type = crate::types::SchemaTypeMapper::pg_type_string_to_oid(&pg_type_str);
-                                debug!("Fast path: Inferred type for '{}' from schema ({}_{}) -> {} (OID {})", 
-                                      col_name, potential_table, potential_column, pg_type_str, new_type);
+                            if let Ok(Some(pg_type_str)) = db
+                                .get_schema_type_with_session(
+                                    &session.id,
+                                    potential_table,
+                                    potential_column,
+                                )
+                                .await
+                            {
+                                let new_type =
+                                    crate::types::SchemaTypeMapper::pg_type_string_to_oid(
+                                        &pg_type_str,
+                                    );
+                                debug!(
+                                    "Fast path: Inferred type for '{}' from schema ({}_{}) -> {} (OID {})",
+                                    col_name,
+                                    potential_table,
+                                    potential_column,
+                                    pg_type_str,
+                                    new_type
+                                );
                                 inferred_type = new_type;
                             } else {
-                                debug!("Fast path: No schema type found for {}.{}", potential_table, potential_column);
+                                debug!(
+                                    "Fast path: No schema type found for {}.{}",
+                                    potential_table, potential_column
+                                );
                             }
                         }
                     }
-                    
+
                     // If we still don't have a type, try direct column lookup in case it's not aliased
                     if inferred_type == PgType::Text.to_oid() {
                         // Extract table name from query if possible
                         if let Some(table_name) = Self::extract_table_from_query(query) {
-                            if let Ok(Some(pg_type_str)) = db.get_schema_type_with_session(&session.id, &table_name, col_name).await {
-                                let new_type = crate::types::SchemaTypeMapper::pg_type_string_to_oid(&pg_type_str);
-                                debug!("Fast path: Inferred type for '{}' from table '{}' -> {} (OID {})", 
-                                      col_name, table_name, pg_type_str, new_type);
+                            if let Ok(Some(pg_type_str)) = db
+                                .get_schema_type_with_session(&session.id, &table_name, col_name)
+                                .await
+                            {
+                                let new_type =
+                                    crate::types::SchemaTypeMapper::pg_type_string_to_oid(
+                                        &pg_type_str,
+                                    );
+                                debug!(
+                                    "Fast path: Inferred type for '{}' from table '{}' -> {} (OID {})",
+                                    col_name, table_name, pg_type_str, new_type
+                                );
                                 inferred_type = new_type;
                             } else {
-                                debug!("Fast path: No type found for column '{}' in table '{}'", col_name, table_name);
+                                debug!(
+                                    "Fast path: No type found for column '{}' in table '{}'",
+                                    col_name, table_name
+                                );
                             }
                         } else {
                             debug!("Fast path: Could not extract table name from query");
                         }
                     }
-                    
+
                     if inferred_type == PgType::Text.to_oid() {
-                        debug!("Fast path: No type found for '{}', defaulting to TEXT", col_name);
+                        debug!(
+                            "Fast path: No type found for '{}', defaulting to TEXT",
+                            col_name
+                        );
                     }
-                    
+
                     inferred_type
                 };
-                
+
                 fields.push(crate::protocol::FieldDescription {
                     name: col_name.clone(),
                     table_oid: 0,
@@ -687,7 +822,7 @@ impl ExtendedFastPath {
                     },
                 });
             }
-            
+
             // Log the types we're sending for orders queries
             if query.contains("orders") && query.contains("customer_id") {
                 info!("Fast path: Sending field descriptions for orders query:");
@@ -695,29 +830,35 @@ impl ExtendedFastPath {
                     info!("  {} -> type OID {}", field.name, field.type_oid);
                 }
             }
-            
-            framed.send(BackendMessage::RowDescription(fields)).await
+
+            framed
+                .send(BackendMessage::RowDescription(fields))
+                .await
                 .map_err(PgSqliteError::Io)?;
         }
-        
+
         // TODO: Handle result_formats for binary encoding
         // For now, we only support text format (handled by falling back earlier)
         let _ = result_formats; // Suppress unused warning
-        
+
         // Send data rows
         for row in response.rows {
-            framed.send(BackendMessage::DataRow(row)).await
+            framed
+                .send(BackendMessage::DataRow(row))
+                .await
                 .map_err(PgSqliteError::Io)?;
         }
-        
+
         // Send CommandComplete
         let tag = format!("SELECT {}", response.rows_affected);
-        framed.send(BackendMessage::CommandComplete { tag }).await
+        framed
+            .send(BackendMessage::CommandComplete { tag })
+            .await
             .map_err(PgSqliteError::Io)?;
-        
+
         Ok(())
     }
-    
+
     async fn execute_dml_with_params<T>(
         framed: &mut Framed<T, crate::protocol::PostgresCodec>,
         db: &Arc<DbHandler>,
@@ -730,22 +871,25 @@ impl ExtendedFastPath {
         T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
     {
         // Use DbHandler's fast path method
-        let response = match db.try_execute_fast_path_with_params(query, &params, &session.id).await {
-            Ok(Some(resp)) => {
-                resp
-            },
+        let response = match db
+            .try_execute_fast_path_with_params(query, &params, &session.id)
+            .await
+        {
+            Ok(Some(resp)) => resp,
             Ok(None) => {
                 return Err(PgSqliteError::Protocol("FastPathFallback".to_string()));
-            },
+            }
             Err(e) => {
                 return Err(e);
-            },
+            }
         };
-        
+
         // For queries with RETURNING clause, send RowDescription and DataRows
         if query.contains("RETURNING") && !response.columns.is_empty() {
             // Send RowDescription
-            let fields: Vec<crate::protocol::FieldDescription> = response.columns.iter()
+            let fields: Vec<crate::protocol::FieldDescription> = response
+                .columns
+                .iter()
                 .enumerate()
                 .map(|(i, col_name)| {
                     crate::protocol::FieldDescription {
@@ -759,17 +903,21 @@ impl ExtendedFastPath {
                     }
                 })
                 .collect();
-            
-            framed.send(BackendMessage::RowDescription(fields)).await
+
+            framed
+                .send(BackendMessage::RowDescription(fields))
+                .await
                 .map_err(PgSqliteError::Io)?;
-            
+
             // Send data rows
             for row in response.rows {
-                framed.send(BackendMessage::DataRow(row)).await
+                framed
+                    .send(BackendMessage::DataRow(row))
+                    .await
                     .map_err(PgSqliteError::Io)?;
             }
         }
-        
+
         // Send appropriate CommandComplete
         let tag = match query_type {
             QueryType::Insert => format!("INSERT 0 {}", response.rows_affected),
@@ -777,10 +925,12 @@ impl ExtendedFastPath {
             QueryType::Delete => format!("DELETE {}", response.rows_affected),
             _ => format!("OK {}", response.rows_affected),
         };
-        
-        framed.send(BackendMessage::CommandComplete { tag }).await
+
+        framed
+            .send(BackendMessage::CommandComplete { tag })
+            .await
             .map_err(PgSqliteError::Io)?;
-        
+
         Ok(())
     }
 }

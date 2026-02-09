@@ -1,20 +1,20 @@
+use pgsqlite::metadata::TypeMetadata;
 use pgsqlite::session::DbHandler;
 use rusqlite::Connection;
-use pgsqlite::metadata::TypeMetadata;
 
 #[test]
 fn test_db_handler_fails_on_drift() {
     // Create a temporary database with drift
     let temp_dir = tempfile::tempdir().unwrap();
     let db_path = temp_dir.path().join("test.db");
-    
+
     // First, create database with correct schema
     {
         let mut conn = Connection::open(&db_path).unwrap();
-        
+
         // Initialize metadata tables
         TypeMetadata::init(&conn).unwrap();
-        
+
         // Create migration metadata tables
         conn.execute(
             "CREATE TABLE IF NOT EXISTS __pgsqlite_metadata (
@@ -23,9 +23,10 @@ fn test_db_handler_fails_on_drift() {
                 created_at REAL DEFAULT (strftime('%s', 'now')),
                 updated_at REAL DEFAULT (strftime('%s', 'now'))
             )",
-            []
-        ).unwrap();
-        
+            [],
+        )
+        .unwrap();
+
         // Create migrations table
         conn.execute(
             "CREATE TABLE IF NOT EXISTS __pgsqlite_migrations (
@@ -41,7 +42,7 @@ fn test_db_handler_fails_on_drift() {
             )",
             []
         ).unwrap();
-        
+
         // Create migration locks table
         conn.execute(
             "CREATE TABLE IF NOT EXISTS __pgsqlite_migration_locks (
@@ -50,9 +51,10 @@ fn test_db_handler_fails_on_drift() {
                 locked_at REAL NOT NULL,
                 expires_at REAL NOT NULL
             )",
-            []
-        ).unwrap();
-        
+            [],
+        )
+        .unwrap();
+
         // Create table
         conn.execute(
             "CREATE TABLE users (
@@ -60,26 +62,28 @@ fn test_db_handler_fails_on_drift() {
                 name TEXT NOT NULL,
                 email TEXT
             )",
-            []
-        ).unwrap();
-        
+            [],
+        )
+        .unwrap();
+
         // Store matching metadata
         let tx = conn.transaction().unwrap();
         tx.execute(
             "INSERT INTO __pgsqlite_schema (table_name, column_name, pg_type, sqlite_type)
-             VALUES 
+             VALUES
              ('users', 'id', 'int4', 'INTEGER'),
              ('users', 'name', 'text', 'TEXT'),
              ('users', 'email', 'text', 'TEXT')",
-            []
-        ).unwrap();
+            [],
+        )
+        .unwrap();
         tx.commit().unwrap();
-        
+
         // Add migration records to indicate all migrations have been applied
         let now = chrono::Utc::now().timestamp() as f64;
         for version in 1..=10 {
             conn.execute(
-                "INSERT INTO __pgsqlite_migrations (version, name, description, applied_at, execution_time_ms, checksum, status) 
+                "INSERT INTO __pgsqlite_migrations (version, name, description, applied_at, execution_time_ms, checksum, status)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'completed')",
                 rusqlite::params![
                     version,
@@ -91,28 +95,33 @@ fn test_db_handler_fails_on_drift() {
                 ]
             ).unwrap();
         }
-        
+
         // Add version to bypass migration check
         conn.execute(
             "INSERT INTO __pgsqlite_metadata (key, value) VALUES ('schema_version', '10')",
-            []
-        ).unwrap();
+            [],
+        )
+        .unwrap();
     }
-    
+
     // Now modify the schema directly to create drift
     {
         let conn = Connection::open(&db_path).unwrap();
-        conn.execute("ALTER TABLE users ADD COLUMN phone TEXT", []).unwrap();
+        conn.execute("ALTER TABLE users ADD COLUMN phone TEXT", [])
+            .unwrap();
     }
-    
+
     // Try to open with DbHandler - should fail due to drift
     let result = DbHandler::new(db_path.to_str().unwrap());
     assert!(result.is_err());
-    
+
     if let Err(e) = result {
         let error_msg = e.to_string();
         eprintln!("Got error: {error_msg}");
-        assert!(error_msg.contains("Schema drift detected"), "Expected 'Schema drift detected' in error: {error_msg}");
+        assert!(
+            error_msg.contains("Schema drift detected"),
+            "Expected 'Schema drift detected' in error: {error_msg}"
+        );
         assert!(error_msg.contains("phone"));
     } else {
         panic!("Expected an error but got Ok");
@@ -124,13 +133,13 @@ fn test_db_handler_succeeds_without_drift() {
     // Create a temporary database without drift
     let temp_dir = tempfile::tempdir().unwrap();
     let db_path = temp_dir.path().join("test.db");
-    
+
     {
         let mut conn = Connection::open(&db_path).unwrap();
-        
+
         // Initialize metadata tables
         TypeMetadata::init(&conn).unwrap();
-        
+
         // Create migration metadata tables
         conn.execute(
             "CREATE TABLE IF NOT EXISTS __pgsqlite_metadata (
@@ -139,9 +148,10 @@ fn test_db_handler_succeeds_without_drift() {
                 created_at REAL DEFAULT (strftime('%s', 'now')),
                 updated_at REAL DEFAULT (strftime('%s', 'now'))
             )",
-            []
-        ).unwrap();
-        
+            [],
+        )
+        .unwrap();
+
         // Create migrations table
         conn.execute(
             "CREATE TABLE IF NOT EXISTS __pgsqlite_migrations (
@@ -157,7 +167,7 @@ fn test_db_handler_succeeds_without_drift() {
             )",
             []
         ).unwrap();
-        
+
         // Create migration locks table
         conn.execute(
             "CREATE TABLE IF NOT EXISTS __pgsqlite_migration_locks (
@@ -166,9 +176,10 @@ fn test_db_handler_succeeds_without_drift() {
                 locked_at REAL NOT NULL,
                 expires_at REAL NOT NULL
             )",
-            []
-        ).unwrap();
-        
+            [],
+        )
+        .unwrap();
+
         // Create table
         conn.execute(
             "CREATE TABLE products (
@@ -176,26 +187,28 @@ fn test_db_handler_succeeds_without_drift() {
                 name TEXT NOT NULL,
                 price REAL
             )",
-            []
-        ).unwrap();
-        
+            [],
+        )
+        .unwrap();
+
         // Store matching metadata
         let tx = conn.transaction().unwrap();
         tx.execute(
             "INSERT INTO __pgsqlite_schema (table_name, column_name, pg_type, sqlite_type)
-             VALUES 
+             VALUES
              ('products', 'id', 'int4', 'INTEGER'),
              ('products', 'name', 'text', 'TEXT'),
              ('products', 'price', 'float8', 'REAL')",
-            []
-        ).unwrap();
+            [],
+        )
+        .unwrap();
         tx.commit().unwrap();
-        
+
         // Add migration records to indicate all migrations have been applied
         let now = chrono::Utc::now().timestamp() as f64;
         for version in 1..=10 {
             conn.execute(
-                "INSERT INTO __pgsqlite_migrations (version, name, description, applied_at, execution_time_ms, checksum, status) 
+                "INSERT INTO __pgsqlite_migrations (version, name, description, applied_at, execution_time_ms, checksum, status)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'completed')",
                 rusqlite::params![
                     version,
@@ -207,14 +220,15 @@ fn test_db_handler_succeeds_without_drift() {
                 ]
             ).unwrap();
         }
-        
+
         // Add version to bypass migration check
         conn.execute(
             "INSERT INTO __pgsqlite_metadata (key, value) VALUES ('schema_version', '10')",
-            []
-        ).unwrap();
+            [],
+        )
+        .unwrap();
     }
-    
+
     // Open with DbHandler - should succeed
     let result = DbHandler::new(db_path.to_str().unwrap());
     if let Err(e) = &result {
@@ -227,13 +241,13 @@ fn test_db_handler_succeeds_without_drift() {
 fn test_drift_detection_with_type_mismatch() {
     let temp_dir = tempfile::tempdir().unwrap();
     let db_path = temp_dir.path().join("test.db");
-    
+
     {
         let mut conn = Connection::open(&db_path).unwrap();
-        
+
         // Initialize metadata tables
         TypeMetadata::init(&conn).unwrap();
-        
+
         // Create migration metadata tables
         conn.execute(
             "CREATE TABLE IF NOT EXISTS __pgsqlite_metadata (
@@ -242,9 +256,10 @@ fn test_drift_detection_with_type_mismatch() {
                 created_at REAL DEFAULT (strftime('%s', 'now')),
                 updated_at REAL DEFAULT (strftime('%s', 'now'))
             )",
-            []
-        ).unwrap();
-        
+            [],
+        )
+        .unwrap();
+
         // Create migrations table
         conn.execute(
             "CREATE TABLE IF NOT EXISTS __pgsqlite_migrations (
@@ -260,7 +275,7 @@ fn test_drift_detection_with_type_mismatch() {
             )",
             []
         ).unwrap();
-        
+
         // Create migration locks table
         conn.execute(
             "CREATE TABLE IF NOT EXISTS __pgsqlite_migration_locks (
@@ -269,34 +284,37 @@ fn test_drift_detection_with_type_mismatch() {
                 locked_at REAL NOT NULL,
                 expires_at REAL NOT NULL
             )",
-            []
-        ).unwrap();
-        
+            [],
+        )
+        .unwrap();
+
         // Create table with INTEGER column
         conn.execute(
             "CREATE TABLE stats (
                 id INTEGER PRIMARY KEY,
                 count INTEGER
             )",
-            []
-        ).unwrap();
-        
+            [],
+        )
+        .unwrap();
+
         // Store metadata with TEXT type (mismatch)
         let tx = conn.transaction().unwrap();
         tx.execute(
             "INSERT INTO __pgsqlite_schema (table_name, column_name, pg_type, sqlite_type)
-             VALUES 
+             VALUES
              ('stats', 'id', 'int4', 'INTEGER'),
              ('stats', 'count', 'text', 'TEXT')",
-            []
-        ).unwrap();
+            [],
+        )
+        .unwrap();
         tx.commit().unwrap();
-        
+
         // Add migration records to indicate all migrations have been applied
         let now = chrono::Utc::now().timestamp() as f64;
         for version in 1..=10 {
             conn.execute(
-                "INSERT INTO __pgsqlite_migrations (version, name, description, applied_at, execution_time_ms, checksum, status) 
+                "INSERT INTO __pgsqlite_migrations (version, name, description, applied_at, execution_time_ms, checksum, status)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'completed')",
                 rusqlite::params![
                     version,
@@ -308,22 +326,26 @@ fn test_drift_detection_with_type_mismatch() {
                 ]
             ).unwrap();
         }
-        
+
         // Add version to bypass migration check
         conn.execute(
             "INSERT INTO __pgsqlite_metadata (key, value) VALUES ('schema_version', '10')",
-            []
-        ).unwrap();
+            [],
+        )
+        .unwrap();
     }
-    
+
     // Try to open with DbHandler - should fail due to type mismatch
     let result = DbHandler::new(db_path.to_str().unwrap());
     assert!(result.is_err());
-    
+
     if let Err(e) = result {
         let error_msg = e.to_string();
         eprintln!("Got error: {error_msg}");
-        assert!(error_msg.contains("Schema drift detected"), "Expected 'Schema drift detected' in error: {error_msg}");
+        assert!(
+            error_msg.contains("Schema drift detected"),
+            "Expected 'Schema drift detected' in error: {error_msg}"
+        );
         assert!(error_msg.contains("Type mismatches"));
         assert!(error_msg.contains("count"));
     } else {

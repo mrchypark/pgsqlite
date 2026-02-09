@@ -1,5 +1,5 @@
-use std::sync::RwLock;
 use once_cell::sync::Lazy;
+use std::sync::RwLock;
 use std::time::Duration;
 
 /// Global translation cache for cast translations
@@ -8,12 +8,12 @@ static GLOBAL_TRANSLATION_CACHE: Lazy<TranslationCache> = Lazy::new(|| {
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(1000);
-    
+
     let ttl = std::env::var("PGSQLITE_TRANSLATION_CACHE_TTL_MINUTES")
         .ok()
         .and_then(|s| s.parse::<u64>().ok())
         .unwrap_or(60);
-    
+
     TranslationCache::new(cache_size, Duration::from_secs(ttl * 60))
 });
 
@@ -34,25 +34,25 @@ impl TranslationCache {
             cache: RwLock::new(super::LruCache::new(capacity, ttl)),
         }
     }
-    
+
     /// Get a translated query from cache
     pub fn get(&self, query: &str) -> Option<String> {
         let cache = self.cache.read().unwrap();
         cache.get(&query.to_string())
     }
-    
+
     /// Insert a translation into the cache
     pub fn insert(&self, original: String, translated: String) {
         let cache = self.cache.read().unwrap();
         cache.insert(original, translated);
     }
-    
+
     /// Clear the cache
     pub fn clear(&self) {
         let cache = self.cache.read().unwrap();
         cache.clear();
     }
-    
+
     /// Get cache statistics
     pub fn stats(&self) -> TranslationCacheStats {
         let cache = self.cache.read().unwrap();

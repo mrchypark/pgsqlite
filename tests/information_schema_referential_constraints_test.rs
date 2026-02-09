@@ -11,10 +11,19 @@ async fn test_information_schema_referential_constraints_basic() {
 
     // Create session
     let session_id = Uuid::new_v4();
-    db_handler.create_session_connection(session_id).await.unwrap();
+    db_handler
+        .create_session_connection(session_id)
+        .await
+        .unwrap();
 
     // Create test tables with foreign key constraints using the same session
-    db_handler.execute_with_session("CREATE TABLE departments (id INTEGER PRIMARY KEY, name TEXT)", &session_id).await.unwrap();
+    db_handler
+        .execute_with_session(
+            "CREATE TABLE departments (id INTEGER PRIMARY KEY, name TEXT)",
+            &session_id,
+        )
+        .await
+        .unwrap();
     db_handler.execute_with_session("CREATE TABLE employees (id INTEGER PRIMARY KEY, name TEXT, dept_id INTEGER REFERENCES departments(id))", &session_id).await.unwrap();
 
     // Test basic query
@@ -26,7 +35,10 @@ async fn test_information_schema_referential_constraints_basic() {
     assert_eq!(result.columns[2], "constraint_schema");
 
     // Should find at least one foreign key constraint
-    assert!(!result.rows.is_empty(), "Expected at least one foreign key constraint");
+    assert!(
+        !result.rows.is_empty(),
+        "Expected at least one foreign key constraint"
+    );
 
     // Check constraint data
     let constraint_name = String::from_utf8(result.rows[0][0].as_ref().unwrap().clone()).unwrap();
@@ -47,14 +59,29 @@ async fn test_information_schema_referential_constraints_all_columns() {
 
     // Create session
     let session_id = Uuid::new_v4();
-    db_handler.create_session_connection(session_id).await.unwrap();
+    db_handler
+        .create_session_connection(session_id)
+        .await
+        .unwrap();
 
     // Create test tables using the same session
-    db_handler.execute_with_session("CREATE TABLE categories (id INTEGER PRIMARY KEY, name TEXT UNIQUE)", &session_id).await.unwrap();
+    db_handler
+        .execute_with_session(
+            "CREATE TABLE categories (id INTEGER PRIMARY KEY, name TEXT UNIQUE)",
+            &session_id,
+        )
+        .await
+        .unwrap();
     db_handler.execute_with_session("CREATE TABLE products (id INTEGER PRIMARY KEY, name TEXT, category_id INTEGER REFERENCES categories(id))", &session_id).await.unwrap();
 
     // Test all columns
-    let result = db_handler.query_with_session("SELECT * FROM information_schema.referential_constraints", &session_id).await.unwrap();
+    let result = db_handler
+        .query_with_session(
+            "SELECT * FROM information_schema.referential_constraints",
+            &session_id,
+        )
+        .await
+        .unwrap();
 
     // Verify all 9 standard columns are present
     assert_eq!(result.columns.len(), 9);
@@ -67,7 +94,7 @@ async fn test_information_schema_referential_constraints_all_columns() {
         "unique_constraint_name",
         "match_option",
         "update_rule",
-        "delete_rule"
+        "delete_rule",
     ];
 
     for (i, expected) in expected_columns.iter().enumerate() {
@@ -94,7 +121,9 @@ async fn test_information_schema_referential_constraints_all_columns() {
     assert!(constraint_name.contains("products") && constraint_name.contains("fkey"));
     assert_eq!(unique_constraint_catalog, "main");
     assert_eq!(unique_constraint_schema, "public");
-    assert!(unique_constraint_name.contains("categories") && unique_constraint_name.contains("pkey"));
+    assert!(
+        unique_constraint_name.contains("categories") && unique_constraint_name.contains("pkey")
+    );
     assert_eq!(match_option, "NONE");
     assert_eq!(update_rule, "NO ACTION");
     assert_eq!(delete_rule, "NO ACTION");
@@ -109,11 +138,26 @@ async fn test_information_schema_referential_constraints_multiple_fks() {
 
     // Create session
     let session_id = Uuid::new_v4();
-    db_handler.create_session_connection(session_id).await.unwrap();
+    db_handler
+        .create_session_connection(session_id)
+        .await
+        .unwrap();
 
     // Create multiple tables with foreign keys
-    db_handler.execute_with_session("CREATE TABLE users (id INTEGER PRIMARY KEY, username TEXT)", &session_id).await.unwrap();
-    db_handler.execute_with_session("CREATE TABLE categories (id INTEGER PRIMARY KEY, name TEXT)", &session_id).await.unwrap();
+    db_handler
+        .execute_with_session(
+            "CREATE TABLE users (id INTEGER PRIMARY KEY, username TEXT)",
+            &session_id,
+        )
+        .await
+        .unwrap();
+    db_handler
+        .execute_with_session(
+            "CREATE TABLE categories (id INTEGER PRIMARY KEY, name TEXT)",
+            &session_id,
+        )
+        .await
+        .unwrap();
     db_handler.execute_with_session("CREATE TABLE posts (id INTEGER PRIMARY KEY, title TEXT, user_id INTEGER REFERENCES users(id), category_id INTEGER REFERENCES categories(id))", &session_id).await.unwrap();
 
     // Test query
@@ -144,11 +188,26 @@ async fn test_information_schema_referential_constraints_where_filtering() {
 
     // Create session
     let session_id = Uuid::new_v4();
-    db_handler.create_session_connection(session_id).await.unwrap();
+    db_handler
+        .create_session_connection(session_id)
+        .await
+        .unwrap();
 
     // Create test tables
-    db_handler.execute_with_session("CREATE TABLE orders (id INTEGER PRIMARY KEY, amount DECIMAL)", &session_id).await.unwrap();
-    db_handler.execute_with_session("CREATE TABLE customers (id INTEGER PRIMARY KEY, name TEXT)", &session_id).await.unwrap();
+    db_handler
+        .execute_with_session(
+            "CREATE TABLE orders (id INTEGER PRIMARY KEY, amount DECIMAL)",
+            &session_id,
+        )
+        .await
+        .unwrap();
+    db_handler
+        .execute_with_session(
+            "CREATE TABLE customers (id INTEGER PRIMARY KEY, name TEXT)",
+            &session_id,
+        )
+        .await
+        .unwrap();
     db_handler.execute_with_session("CREATE TABLE order_items (id INTEGER PRIMARY KEY, order_id INTEGER REFERENCES orders(id), customer_id INTEGER REFERENCES customers(id))", &session_id).await.unwrap();
 
     // Test filtering by constraint name pattern
@@ -176,14 +235,35 @@ async fn test_information_schema_referential_constraints_no_foreign_keys() {
 
     // Create session
     let session_id = Uuid::new_v4();
-    db_handler.create_session_connection(session_id).await.unwrap();
+    db_handler
+        .create_session_connection(session_id)
+        .await
+        .unwrap();
 
     // Create tables without foreign key constraints
-    db_handler.execute_with_session("CREATE TABLE simple_table (id INTEGER PRIMARY KEY, name TEXT)", &session_id).await.unwrap();
-    db_handler.execute_with_session("CREATE TABLE another_table (id INTEGER PRIMARY KEY, value INTEGER)", &session_id).await.unwrap();
+    db_handler
+        .execute_with_session(
+            "CREATE TABLE simple_table (id INTEGER PRIMARY KEY, name TEXT)",
+            &session_id,
+        )
+        .await
+        .unwrap();
+    db_handler
+        .execute_with_session(
+            "CREATE TABLE another_table (id INTEGER PRIMARY KEY, value INTEGER)",
+            &session_id,
+        )
+        .await
+        .unwrap();
 
     // Test query - should return no rows
-    let result = db_handler.query_with_session("SELECT * FROM information_schema.referential_constraints", &session_id).await.unwrap();
+    let result = db_handler
+        .query_with_session(
+            "SELECT * FROM information_schema.referential_constraints",
+            &session_id,
+        )
+        .await
+        .unwrap();
 
     assert_eq!(result.columns.len(), 9); // All columns should be present
     assert_eq!(result.rows.len(), 0); // No foreign key constraints
@@ -198,10 +278,19 @@ async fn test_information_schema_referential_constraints_table_level_fk() {
 
     // Create session
     let session_id = Uuid::new_v4();
-    db_handler.create_session_connection(session_id).await.unwrap();
+    db_handler
+        .create_session_connection(session_id)
+        .await
+        .unwrap();
 
     // Create tables with table-level foreign key constraint
-    db_handler.execute_with_session("CREATE TABLE suppliers (id INTEGER PRIMARY KEY, name TEXT)", &session_id).await.unwrap();
+    db_handler
+        .execute_with_session(
+            "CREATE TABLE suppliers (id INTEGER PRIMARY KEY, name TEXT)",
+            &session_id,
+        )
+        .await
+        .unwrap();
     db_handler.execute_with_session("CREATE TABLE products (id INTEGER PRIMARY KEY, name TEXT, supplier_id INTEGER, FOREIGN KEY (supplier_id) REFERENCES suppliers(id))", &session_id).await.unwrap();
 
     // Test query
@@ -210,10 +299,13 @@ async fn test_information_schema_referential_constraints_table_level_fk() {
     assert_eq!(result.rows.len(), 1);
 
     let constraint_name = String::from_utf8(result.rows[0][0].as_ref().unwrap().clone()).unwrap();
-    let unique_constraint_name = String::from_utf8(result.rows[0][1].as_ref().unwrap().clone()).unwrap();
+    let unique_constraint_name =
+        String::from_utf8(result.rows[0][1].as_ref().unwrap().clone()).unwrap();
 
     assert!(constraint_name.contains("products") && constraint_name.contains("fkey"));
-    assert!(unique_constraint_name.contains("suppliers") && unique_constraint_name.contains("pkey"));
+    assert!(
+        unique_constraint_name.contains("suppliers") && unique_constraint_name.contains("pkey")
+    );
 }
 
 #[tokio::test]
@@ -225,10 +317,19 @@ async fn test_information_schema_referential_constraints_orm_compatibility() {
 
     // Create session
     let session_id = Uuid::new_v4();
-    db_handler.create_session_connection(session_id).await.unwrap();
+    db_handler
+        .create_session_connection(session_id)
+        .await
+        .unwrap();
 
     // Create Django/Rails-style schema
-    db_handler.execute_with_session("CREATE TABLE django_content_type (id INTEGER PRIMARY KEY, app_label TEXT, model TEXT)", &session_id).await.unwrap();
+    db_handler
+        .execute_with_session(
+            "CREATE TABLE django_content_type (id INTEGER PRIMARY KEY, app_label TEXT, model TEXT)",
+            &session_id,
+        )
+        .await
+        .unwrap();
     db_handler.execute_with_session("CREATE TABLE auth_permission (id INTEGER PRIMARY KEY, name TEXT, content_type_id INTEGER REFERENCES django_content_type(id))", &session_id).await.unwrap();
 
     // Test ORM-style queries

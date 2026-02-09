@@ -24,6 +24,7 @@ When Unix socket support is enabled, pgsqlite creates a socket file named `.s.PG
 | Option | CLI Flag | Environment Variable | Default | Description |
 |--------|----------|---------------------|---------|-------------|
 | Socket Directory | `--socket-dir` | `PGSQLITE_SOCKET_DIR` | `/tmp` | Directory for Unix socket file |
+| Socket Permissions | `--socket-permissions` | `PGSQLITE_SOCKET_PERMISSIONS` | `0700` | Socket file permissions in octal (e.g. `0700`, `0777`) |
 | Disable TCP | `--no-tcp` | `PGSQLITE_NO_TCP` | `false` | Use only Unix socket, no TCP |
 
 ## Connection Examples

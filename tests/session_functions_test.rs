@@ -11,10 +11,16 @@ async fn test_current_user_basic() {
 
     // Create session
     let session_id = Uuid::new_v4();
-    db_handler.create_session_connection(session_id).await.unwrap();
+    db_handler
+        .create_session_connection(session_id)
+        .await
+        .unwrap();
 
     // Test current_user function
-    let result = db_handler.query_with_session("SELECT current_user", &session_id).await.unwrap();
+    let result = db_handler
+        .query_with_session("SELECT current_user", &session_id)
+        .await
+        .unwrap();
 
     assert_eq!(result.columns.len(), 1);
     assert_eq!(result.rows.len(), 1);
@@ -32,10 +38,16 @@ async fn test_current_user_with_parentheses() {
 
     // Create session
     let session_id = Uuid::new_v4();
-    db_handler.create_session_connection(session_id).await.unwrap();
+    db_handler
+        .create_session_connection(session_id)
+        .await
+        .unwrap();
 
     // Test current_user() function with parentheses
-    let result = db_handler.query_with_session("SELECT current_user()", &session_id).await.unwrap();
+    let result = db_handler
+        .query_with_session("SELECT current_user()", &session_id)
+        .await
+        .unwrap();
 
     assert_eq!(result.columns.len(), 1);
     assert_eq!(result.rows.len(), 1);
@@ -53,10 +65,16 @@ async fn test_current_database_basic() {
 
     // Create session
     let session_id = Uuid::new_v4();
-    db_handler.create_session_connection(session_id).await.unwrap();
+    db_handler
+        .create_session_connection(session_id)
+        .await
+        .unwrap();
 
     // Test current_database function
-    let result = db_handler.query_with_session("SELECT current_database()", &session_id).await.unwrap();
+    let result = db_handler
+        .query_with_session("SELECT current_database()", &session_id)
+        .await
+        .unwrap();
 
     assert_eq!(result.columns.len(), 1);
     assert_eq!(result.rows.len(), 1);
@@ -74,10 +92,16 @@ async fn test_session_user_basic() {
 
     // Create session
     let session_id = Uuid::new_v4();
-    db_handler.create_session_connection(session_id).await.unwrap();
+    db_handler
+        .create_session_connection(session_id)
+        .await
+        .unwrap();
 
     // Test session_user function
-    let result = db_handler.query_with_session("SELECT session_user()", &session_id).await.unwrap();
+    let result = db_handler
+        .query_with_session("SELECT session_user()", &session_id)
+        .await
+        .unwrap();
 
     assert_eq!(result.columns.len(), 1);
     assert_eq!(result.rows.len(), 1);
@@ -95,10 +119,16 @@ async fn test_current_schema_basic() {
 
     // Create session
     let session_id = Uuid::new_v4();
-    db_handler.create_session_connection(session_id).await.unwrap();
+    db_handler
+        .create_session_connection(session_id)
+        .await
+        .unwrap();
 
     // Test current_schema function
-    let result = db_handler.query_with_session("SELECT current_schema()", &session_id).await.unwrap();
+    let result = db_handler
+        .query_with_session("SELECT current_schema()", &session_id)
+        .await
+        .unwrap();
 
     assert_eq!(result.columns.len(), 1);
     assert_eq!(result.rows.len(), 1);
@@ -116,10 +146,16 @@ async fn test_current_schemas_with_implicit() {
 
     // Create session
     let session_id = Uuid::new_v4();
-    db_handler.create_session_connection(session_id).await.unwrap();
+    db_handler
+        .create_session_connection(session_id)
+        .await
+        .unwrap();
 
     // Test current_schemas with implicit=true
-    let result = db_handler.query_with_session("SELECT current_schemas(true)", &session_id).await.unwrap();
+    let result = db_handler
+        .query_with_session("SELECT current_schemas(true)", &session_id)
+        .await
+        .unwrap();
 
     assert_eq!(result.columns.len(), 1);
     assert_eq!(result.rows.len(), 1);
@@ -137,10 +173,16 @@ async fn test_current_schemas_without_implicit() {
 
     // Create session
     let session_id = Uuid::new_v4();
-    db_handler.create_session_connection(session_id).await.unwrap();
+    db_handler
+        .create_session_connection(session_id)
+        .await
+        .unwrap();
 
     // Test current_schemas with implicit=false
-    let result = db_handler.query_with_session("SELECT current_schemas(false)", &session_id).await.unwrap();
+    let result = db_handler
+        .query_with_session("SELECT current_schemas(false)", &session_id)
+        .await
+        .unwrap();
 
     assert_eq!(result.columns.len(), 1);
     assert_eq!(result.rows.len(), 1);
@@ -158,13 +200,19 @@ async fn test_orm_compatibility_patterns() {
 
     // Create session
     let session_id = Uuid::new_v4();
-    db_handler.create_session_connection(session_id).await.unwrap();
+    db_handler
+        .create_session_connection(session_id)
+        .await
+        .unwrap();
 
     // Django-style connection validation query
-    let result = db_handler.query_with_session(
-        "SELECT current_database(), current_user, current_schema()",
-        &session_id
-    ).await.unwrap();
+    let result = db_handler
+        .query_with_session(
+            "SELECT current_database(), current_user, current_schema()",
+            &session_id,
+        )
+        .await
+        .unwrap();
 
     assert_eq!(result.columns.len(), 3);
     assert_eq!(result.rows.len(), 1);
@@ -211,15 +259,18 @@ async fn test_orm_compatibility_patterns() {
     assert_eq!(user_schemas, r#"["public"]"#);
 
     // Ecto-style connection info
-    let result = db_handler.query_with_session(
-        "SELECT
+    let result = db_handler
+        .query_with_session(
+            "SELECT
             current_database() AS database,
             current_user AS user_name,
             current_schema() AS default_schema,
             session_user() AS session_user_name
         ",
-        &session_id
-    ).await.unwrap();
+            &session_id,
+        )
+        .await
+        .unwrap();
 
     assert_eq!(result.columns.len(), 4);
     assert_eq!(result.columns[0], "database");
@@ -249,12 +300,30 @@ async fn test_session_functions_consistency() {
     let session1 = Uuid::new_v4();
     let session2 = Uuid::new_v4();
 
-    db_handler.create_session_connection(session1).await.unwrap();
-    db_handler.create_session_connection(session2).await.unwrap();
+    db_handler
+        .create_session_connection(session1)
+        .await
+        .unwrap();
+    db_handler
+        .create_session_connection(session2)
+        .await
+        .unwrap();
 
     // Test that session functions return the same values across different sessions
-    let result1 = db_handler.query_with_session("SELECT current_user, current_database(), current_schema()", &session1).await.unwrap();
-    let result2 = db_handler.query_with_session("SELECT current_user, current_database(), current_schema()", &session2).await.unwrap();
+    let result1 = db_handler
+        .query_with_session(
+            "SELECT current_user, current_database(), current_schema()",
+            &session1,
+        )
+        .await
+        .unwrap();
+    let result2 = db_handler
+        .query_with_session(
+            "SELECT current_user, current_database(), current_schema()",
+            &session2,
+        )
+        .await
+        .unwrap();
 
     assert_eq!(result1.columns.len(), 3);
     assert_eq!(result2.columns.len(), 3);
@@ -287,10 +356,18 @@ async fn test_session_functions_with_table_operations() {
 
     // Create session
     let session_id = Uuid::new_v4();
-    db_handler.create_session_connection(session_id).await.unwrap();
+    db_handler
+        .create_session_connection(session_id)
+        .await
+        .unwrap();
 
     // Create a table
-    db_handler.execute("CREATE TABLE test_sessions (id INTEGER PRIMARY KEY, created_by TEXT, db_name TEXT)").await.unwrap();
+    db_handler
+        .execute(
+            "CREATE TABLE test_sessions (id INTEGER PRIMARY KEY, created_by TEXT, db_name TEXT)",
+        )
+        .await
+        .unwrap();
 
     // Insert data using session functions
     let result = db_handler.query_with_session(
@@ -331,10 +408,15 @@ async fn test_logging_and_audit_patterns() {
 
     // Create session
     let session_id = Uuid::new_v4();
-    db_handler.create_session_connection(session_id).await.unwrap();
+    db_handler
+        .create_session_connection(session_id)
+        .await
+        .unwrap();
 
     // Create audit table
-    db_handler.execute("CREATE TABLE audit_log (
+    db_handler
+        .execute(
+            "CREATE TABLE audit_log (
         id INTEGER PRIMARY KEY,
         action TEXT,
         table_name TEXT,
@@ -342,15 +424,21 @@ async fn test_logging_and_audit_patterns() {
         database_name TEXT,
         schema_name TEXT,
         timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-    )").await.unwrap();
+    )",
+        )
+        .await
+        .unwrap();
 
     // ORM-style audit logging using session functions
-    let result = db_handler.query_with_session(
-        "INSERT INTO audit_log (action, table_name, user_name, database_name, schema_name)
+    let result = db_handler
+        .query_with_session(
+            "INSERT INTO audit_log (action, table_name, user_name, database_name, schema_name)
          VALUES ('CREATE_TABLE', 'users', current_user, current_database(), current_schema())
          RETURNING id, user_name, database_name, schema_name",
-        &session_id
-    ).await.unwrap();
+            &session_id,
+        )
+        .await
+        .unwrap();
 
     assert_eq!(result.columns.len(), 4);
     assert_eq!(result.rows.len(), 1);
@@ -364,18 +452,24 @@ async fn test_logging_and_audit_patterns() {
     assert_eq!(schema_name, "public");
 
     // Test complex logging query with multiple session functions
-    let result = db_handler.query_with_session(
-        "SELECT
+    let result = db_handler
+        .query_with_session(
+            "SELECT
             'User: ' || current_user ||
             ', Database: ' || current_database() ||
             ', Schema: ' || current_schema() ||
             ', Session User: ' || session_user() AS audit_info",
-        &session_id
-    ).await.unwrap();
+            &session_id,
+        )
+        .await
+        .unwrap();
 
     assert_eq!(result.columns.len(), 1);
     assert_eq!(result.rows.len(), 1);
 
     let audit_info = String::from_utf8(result.rows[0][0].as_ref().unwrap().clone()).unwrap();
-    assert_eq!(audit_info, "User: postgres, Database: main, Schema: public, Session User: postgres");
+    assert_eq!(
+        audit_info,
+        "User: postgres, Database: main, Schema: public, Session User: postgres"
+    );
 }

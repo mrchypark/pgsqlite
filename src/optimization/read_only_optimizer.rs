@@ -1,10 +1,10 @@
+use crate::cache::SchemaCache;
+use crate::query::QueryComplexity;
+use crate::session::db_handler::DbResponse;
+use rusqlite::Connection;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
-use rusqlite::Connection;
-use crate::cache::SchemaCache;
-use crate::session::db_handler::DbResponse;
-use crate::query::QueryComplexity;
 use tracing::{debug, info};
 
 /// Direct read-only access optimizer for SELECT queries
@@ -45,7 +45,6 @@ struct CachedQueryPlan {
     /// Success rate (for reliability scoring)
     success_rate: f64,
 }
-
 
 /// Statistics for read-only optimizer
 #[derive(Debug, Default, Clone)]
@@ -96,7 +95,7 @@ impl ReadOnlyOptimizer {
         if let Some(mut plan) = self.get_cached_plan(&cache_key) {
             // Cache hit - execute with cached plan
             debug!("Read-only cache hit for query: {}", query);
-            
+
             // Update access stats
             plan.access_count += 1;
             plan.last_used = Instant::now();
@@ -114,11 +113,11 @@ impl ReadOnlyOptimizer {
 
         // Cache miss - analyze and create new plan
         debug!("Read-only cache miss, analyzing query: {}", query);
-        
+
         if let Some(plan) = self.analyze_and_create_plan(query, schema_cache, primary_conn)? {
             // Cache the new plan
             self.cache_query_plan(cache_key, plan.clone());
-            
+
             // Update stats
             {
                 let mut stats = self.stats.write().unwrap();
@@ -127,11 +126,11 @@ impl ReadOnlyOptimizer {
 
             // Execute with new plan
             let result = self.execute_with_cached_plan(primary_conn, &plan, query);
-            
+
             // Update execution time statistics
             let execution_time = start_time.elapsed();
             self.update_execution_stats(&plan.query, execution_time, result.is_ok());
-            
+
             return result;
         }
 
@@ -147,20 +146,21 @@ impl ReadOnlyOptimizer {
     /// Check if a query can use read-only optimization
     fn can_use_read_only_optimization(&self, query: &str) -> bool {
         let query_upper = query.to_uppercase();
-        
+
         // Must be a SELECT query
         if !query_upper.trim().starts_with("SELECT") {
             return false;
         }
 
         // Exclude complex queries that need full processing
-        if query_upper.contains("JOIN") ||
-           query_upper.contains("UNION") ||
-           query_upper.contains("SUBQUERY") ||
-           query_upper.contains("WITH") ||
-           query_upper.contains("CASE") ||
-           query_upper.contains("WINDOW") ||
-           query_upper.contains("RECURSIVE") {
+        if query_upper.contains("JOIN")
+            || query_upper.contains("UNION")
+            || query_upper.contains("SUBQUERY")
+            || query_upper.contains("WITH")
+            || query_upper.contains("CASE")
+            || query_upper.contains("WINDOW")
+            || query_upper.contains("RECURSIVE")
+        {
             return false;
         }
 
@@ -171,7 +171,8 @@ impl ReadOnlyOptimizer {
            query_upper.contains("CURRENT_TIME") ||
            query_upper.contains("::") ||  // Type casts
            query_upper.contains("EXTRACT") ||
-           query_upper.contains("DATE_TRUNC") {
+           query_upper.contains("DATE_TRUNC")
+        {
             return false;
         }
 
@@ -203,12 +204,12 @@ impl ReadOnlyOptimizer {
     /// Cache a new query plan
     fn cache_query_plan(&self, cache_key: String, plan: CachedQueryPlan) {
         let mut plans = self.query_plans.write().unwrap();
-        
+
         // Check if we need to evict entries
         if plans.len() >= self.max_cache_size {
             self.evict_least_valuable_plan(&mut plans);
         }
-        
+
         plans.insert(cache_key, plan);
     }
 
@@ -235,7 +236,10 @@ impl ReadOnlyOptimizer {
 
         if !evict_key.is_empty() {
             plans.remove(&evict_key);
-            debug!("Evicted read-only query plan: {} (score: {:.2})", evict_key, lowest_score);
+            debug!(
+                "Evicted read-only query plan: {} (score: {:.2})",
+                evict_key, lowest_score
+            );
         }
     }
 
@@ -255,7 +259,7 @@ impl ReadOnlyOptimizer {
         // Prepare statement to get column information
         let stmt = conn.prepare(query)?;
         let column_count = stmt.column_count();
-        
+
         // Get column names
         let mut columns = Vec::new();
         for i in 0..column_count {
@@ -411,53 +415,67 @@ impl ReadOnlyOptimizer {
     /// Extract table name from SELECT query
     fn extract_table_name(&self, query: &str) -> Option<String> {
         let query_upper = query.to_uppercase();
-        
+
         // Find FROM clause
         if let Some(from_pos) = query_upper.find(" FROM ") {
             let after_from = &query[from_pos + 6..].trim();
-            
+
             // Find end of table name
-            let end = after_from.find(' ')
+            let end = after_from
+                .find(' ')
                 .or_else(|| after_from.find(';'))
                 .or_else(|| after_from.find('\n'))
                 .unwrap_or(after_from.len());
-            
+
             let table_name = after_from[..end].trim();
-            
+
             // Remove quotes if present
             let table_name = table_name.trim_matches('"').trim_matches('\'');
-            
+
             if !table_name.is_empty() {
                 return Some(table_name.to_string());
             }
         }
-        
+
         None
     }
 
     /// Classify query complexity for optimization decisions
     fn classify_query_complexity(&self, query: &str) -> QueryComplexity {
         let query_upper = query.to_uppercase();
-        
+
         // Count complexity indicators
         let mut complexity_score = 0;
-        
-        if query_upper.contains("WHERE") { complexity_score += 1; }
-        if query_upper.contains("ORDER BY") { complexity_score += 1; }
-        if query_upper.contains("GROUP BY") { complexity_score += 2; }
-        if query_upper.contains("HAVING") { complexity_score += 2; }
-        if query_upper.contains("LIMIT") { complexity_score += 1; }
-        if query_upper.contains("OFFSET") { complexity_score += 1; }
-        
-        // Check for aggregate functions
-        if query_upper.contains("COUNT(") || 
-           query_upper.contains("SUM(") || 
-           query_upper.contains("AVG(") || 
-           query_upper.contains("MAX(") || 
-           query_upper.contains("MIN(") {
+
+        if query_upper.contains("WHERE") {
             complexity_score += 1;
         }
-        
+        if query_upper.contains("ORDER BY") {
+            complexity_score += 1;
+        }
+        if query_upper.contains("GROUP BY") {
+            complexity_score += 2;
+        }
+        if query_upper.contains("HAVING") {
+            complexity_score += 2;
+        }
+        if query_upper.contains("LIMIT") {
+            complexity_score += 1;
+        }
+        if query_upper.contains("OFFSET") {
+            complexity_score += 1;
+        }
+
+        // Check for aggregate functions
+        if query_upper.contains("COUNT(")
+            || query_upper.contains("SUM(")
+            || query_upper.contains("AVG(")
+            || query_upper.contains("MAX(")
+            || query_upper.contains("MIN(")
+        {
+            complexity_score += 1;
+        }
+
         match complexity_score {
             0..=1 => QueryComplexity::Simple,
             2..=4 => QueryComplexity::Medium,
@@ -468,12 +486,12 @@ impl ReadOnlyOptimizer {
     /// Update execution statistics
     fn update_execution_stats(&self, _query: &str, execution_time: Duration, success: bool) {
         let mut stats = self.stats.write().unwrap();
-        
+
         // Update average execution time
         let total_time = stats.avg_execution_time_ms * stats.total_queries as f64;
         let new_time = execution_time.as_millis() as f64;
         stats.avg_execution_time_ms = (total_time + new_time) / (stats.total_queries + 1) as f64;
-        
+
         if success {
             stats.successful_optimizations += 1;
         } else {
@@ -491,7 +509,7 @@ impl ReadOnlyOptimizer {
     pub fn clear_cache(&self) {
         let mut plans = self.query_plans.write().unwrap();
         plans.clear();
-        
+
         info!("Cleared read-only optimizer cache");
     }
 
@@ -522,27 +540,37 @@ mod tests {
     #[test]
     fn test_can_use_read_only_optimization() {
         let optimizer = ReadOnlyOptimizer::new(100);
-        
+
         // Simple SELECT should be optimizable
         assert!(optimizer.can_use_read_only_optimization("SELECT * FROM users"));
-        assert!(optimizer.can_use_read_only_optimization("SELECT id, name FROM products WHERE active = 1"));
-        
+        assert!(
+            optimizer
+                .can_use_read_only_optimization("SELECT id, name FROM products WHERE active = 1")
+        );
+
         // Complex queries should not be optimizable
-        assert!(!optimizer.can_use_read_only_optimization("SELECT * FROM users JOIN orders ON users.id = orders.user_id"));
-        assert!(!optimizer.can_use_read_only_optimization("SELECT * FROM users WHERE created_at > NOW()"));
+        assert!(!optimizer.can_use_read_only_optimization(
+            "SELECT * FROM users JOIN orders ON users.id = orders.user_id"
+        ));
+        assert!(
+            !optimizer
+                .can_use_read_only_optimization("SELECT * FROM users WHERE created_at > NOW()")
+        );
         assert!(!optimizer.can_use_read_only_optimization("UPDATE users SET name = 'test'"));
-        assert!(!optimizer.can_use_read_only_optimization("SELECT COUNT(*) FROM users UNION SELECT COUNT(*) FROM orders"));
+        assert!(!optimizer.can_use_read_only_optimization(
+            "SELECT COUNT(*) FROM users UNION SELECT COUNT(*) FROM orders"
+        ));
     }
 
     #[test]
     fn test_cache_key_generation() {
         let optimizer = ReadOnlyOptimizer::new(100);
-        
+
         // Test normalization
         let key1 = optimizer.generate_cache_key("SELECT * FROM users");
         let key2 = optimizer.generate_cache_key("  SELECT   *   FROM   users  ");
         let key3 = optimizer.generate_cache_key("select * from users");
-        
+
         assert_eq!(key1, key2);
         assert_eq!(key1, key3);
     }
@@ -550,28 +578,55 @@ mod tests {
     #[test]
     fn test_table_name_extraction() {
         let optimizer = ReadOnlyOptimizer::new(100);
-        
-        assert_eq!(optimizer.extract_table_name("SELECT * FROM users"), Some("users".to_string()));
-        assert_eq!(optimizer.extract_table_name("SELECT id, name FROM products WHERE active = 1"), Some("products".to_string()));
-        assert_eq!(optimizer.extract_table_name("SELECT * FROM \"quoted_table\""), Some("quoted_table".to_string()));
-        assert_eq!(optimizer.extract_table_name("SELECT * FROM users;"), Some("users".to_string()));
-        
+
+        assert_eq!(
+            optimizer.extract_table_name("SELECT * FROM users"),
+            Some("users".to_string())
+        );
+        assert_eq!(
+            optimizer.extract_table_name("SELECT id, name FROM products WHERE active = 1"),
+            Some("products".to_string())
+        );
+        assert_eq!(
+            optimizer.extract_table_name("SELECT * FROM \"quoted_table\""),
+            Some("quoted_table".to_string())
+        );
+        assert_eq!(
+            optimizer.extract_table_name("SELECT * FROM users;"),
+            Some("users".to_string())
+        );
+
         // Should not extract from complex queries
-        assert_eq!(optimizer.extract_table_name("SELECT * FROM users JOIN orders"), Some("users".to_string()));
+        assert_eq!(
+            optimizer.extract_table_name("SELECT * FROM users JOIN orders"),
+            Some("users".to_string())
+        );
     }
 
     #[test]
     fn test_query_complexity_classification() {
         let optimizer = ReadOnlyOptimizer::new(100);
-        
+
         // Simple queries
-        assert!(matches!(optimizer.classify_query_complexity("SELECT * FROM users"), QueryComplexity::Simple));
-        assert!(matches!(optimizer.classify_query_complexity("SELECT * FROM users WHERE id = 1"), QueryComplexity::Simple));
-        
+        assert!(matches!(
+            optimizer.classify_query_complexity("SELECT * FROM users"),
+            QueryComplexity::Simple
+        ));
+        assert!(matches!(
+            optimizer.classify_query_complexity("SELECT * FROM users WHERE id = 1"),
+            QueryComplexity::Simple
+        ));
+
         // Medium complexity queries
-        assert!(matches!(optimizer.classify_query_complexity("SELECT * FROM users WHERE id = 1 ORDER BY name"), QueryComplexity::Medium));
-        assert!(matches!(optimizer.classify_query_complexity("SELECT COUNT(*) FROM users GROUP BY status"), QueryComplexity::Medium));
-        
+        assert!(matches!(
+            optimizer.classify_query_complexity("SELECT * FROM users WHERE id = 1 ORDER BY name"),
+            QueryComplexity::Medium
+        ));
+        assert!(matches!(
+            optimizer.classify_query_complexity("SELECT COUNT(*) FROM users GROUP BY status"),
+            QueryComplexity::Medium
+        ));
+
         // Complex queries
         assert!(matches!(optimizer.classify_query_complexity("SELECT * FROM users WHERE id = 1 ORDER BY name GROUP BY status HAVING COUNT(*) > 5 LIMIT 10 OFFSET 20"), QueryComplexity::Complex));
     }
@@ -581,29 +636,41 @@ mod tests {
         let optimizer = ReadOnlyOptimizer::new(100);
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         let schema_cache = SchemaCache::new(3600);
-        
+
         // Create a test table
-        conn.execute("CREATE TABLE users (id INTEGER, name TEXT, active BOOLEAN)", []).unwrap();
-        conn.execute("INSERT INTO users VALUES (1, 'Alice', 1), (2, 'Bob', 0)", []).unwrap();
-        
+        conn.execute(
+            "CREATE TABLE users (id INTEGER, name TEXT, active BOOLEAN)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO users VALUES (1, 'Alice', 1), (2, 'Bob', 0)",
+            [],
+        )
+        .unwrap();
+
         // Test simple query execution
-        let result = optimizer.execute_read_only_query(&conn, "SELECT * FROM users", &schema_cache).unwrap();
+        let result = optimizer
+            .execute_read_only_query(&conn, "SELECT * FROM users", &schema_cache)
+            .unwrap();
         assert!(result.is_some());
-        
+
         let response = result.unwrap();
         assert_eq!(response.columns, vec!["id", "name", "active"]);
         assert_eq!(response.rows.len(), 2);
-        
+
         // Test that stats are updated
         let stats = optimizer.get_stats();
         assert_eq!(stats.total_queries, 1);
         assert_eq!(stats.cache_misses, 1);
         assert_eq!(stats.successful_optimizations, 1);
-        
+
         // Test cache hit on second execution
-        let result2 = optimizer.execute_read_only_query(&conn, "SELECT * FROM users", &schema_cache).unwrap();
+        let result2 = optimizer
+            .execute_read_only_query(&conn, "SELECT * FROM users", &schema_cache)
+            .unwrap();
         assert!(result2.is_some());
-        
+
         let stats2 = optimizer.get_stats();
         assert_eq!(stats2.total_queries, 2);
         assert_eq!(stats2.cache_hits, 1);

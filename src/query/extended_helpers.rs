@@ -1,4 +1,4 @@
-use sqlparser::ast::{Query, TableFactor, SetExpr};
+use sqlparser::ast::{Query, SetExpr, TableFactor};
 
 pub fn extract_tables_from_query(query: &Query, tables: &mut Vec<String>) {
     // Extract from WITH clause if present
@@ -7,7 +7,7 @@ pub fn extract_tables_from_query(query: &Query, tables: &mut Vec<String>) {
             extract_tables_from_query(&cte.query, tables);
         }
     }
-    
+
     // Extract from main query body
     match &query.body.as_ref() {
         SetExpr::Select(select) => {

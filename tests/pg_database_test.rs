@@ -9,7 +9,10 @@ async fn test_pg_database_datname() {
     let client = &server.client;
 
     // Test SELECT datname FROM pg_database
-    let rows = client.query("SELECT datname FROM pg_database", &[]).await.unwrap();
+    let rows = client
+        .query("SELECT datname FROM pg_database", &[])
+        .await
+        .unwrap();
 
     assert_eq!(rows.len(), 1);
     let datname: &str = rows[0].get(0);
@@ -24,7 +27,10 @@ async fn test_pg_database_all_columns() {
     let client = &server.client;
 
     // Test SELECT * FROM pg_database
-    let rows = client.query("SELECT * FROM pg_database", &[]).await.unwrap();
+    let rows = client
+        .query("SELECT * FROM pg_database", &[])
+        .await
+        .unwrap();
 
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].len(), 18); // All 18 columns
@@ -60,7 +66,10 @@ async fn test_pg_database_specific_columns() {
     let client = &server.client;
 
     // Test SELECT oid, datname, datdba FROM pg_database
-    let rows = client.query("SELECT oid, datname, datdba FROM pg_database", &[]).await.unwrap();
+    let rows = client
+        .query("SELECT oid, datname, datdba FROM pg_database", &[])
+        .await
+        .unwrap();
 
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].len(), 3); // Only 3 columns
@@ -82,7 +91,10 @@ async fn test_pg_catalog_pg_database() {
     let client = &server.client;
 
     // Test SELECT datname FROM pg_catalog.pg_database
-    let rows = client.query("SELECT datname FROM pg_catalog.pg_database", &[]).await.unwrap();
+    let rows = client
+        .query("SELECT datname FROM pg_catalog.pg_database", &[])
+        .await
+        .unwrap();
 
     assert_eq!(rows.len(), 1);
     let datname: &str = rows[0].get(0);
@@ -97,7 +109,13 @@ async fn test_pg_database_where_clause() {
     let client = &server.client;
 
     // Test SELECT * FROM pg_database WHERE datname = 'main'
-    let rows = client.query("SELECT datname FROM pg_database WHERE datname = 'main'", &[]).await.unwrap();
+    let rows = client
+        .query(
+            "SELECT datname FROM pg_database WHERE datname = 'main'",
+            &[],
+        )
+        .await
+        .unwrap();
 
     assert_eq!(rows.len(), 1);
     let datname: &str = rows[0].get(0);
@@ -106,7 +124,13 @@ async fn test_pg_database_where_clause() {
     // Test with non-existent database - this will still return 1 row because
     // WHERE clauses on catalog views are handled by the protocol layer
     // This is expected behavior for system catalog simulation
-    let _rows = client.query("SELECT datname FROM pg_database WHERE datname = 'nonexistent'", &[]).await.unwrap();
+    let _rows = client
+        .query(
+            "SELECT datname FROM pg_database WHERE datname = 'nonexistent'",
+            &[],
+        )
+        .await
+        .unwrap();
     // Note: This will return 1 row because WHERE filtering happens at a higher level
     // The catalog interceptor returns all available data
 }
@@ -120,15 +144,24 @@ async fn test_current_database_function() {
 
     // Test current_database() function compatibility
     // This should work since pg_database returns 'main' as the database name
-    let rows = client.query("SELECT current_database()", &[]).await.unwrap();
+    let rows = client
+        .query("SELECT current_database()", &[])
+        .await
+        .unwrap();
 
     assert_eq!(rows.len(), 1);
     let current_db: &str = rows[0].get(0);
 
     // Should match what pg_database.datname returns
-    let db_rows = client.query("SELECT datname FROM pg_database", &[]).await.unwrap();
+    let db_rows = client
+        .query("SELECT datname FROM pg_database", &[])
+        .await
+        .unwrap();
     let datname: &str = db_rows[0].get(0);
 
     // They should be consistent (though current_database() might return something different)
-    println!("current_database(): {}, pg_database.datname: {}", current_db, datname);
+    println!(
+        "current_database(): {}, pg_database.datname: {}",
+        current_db, datname
+    );
 }

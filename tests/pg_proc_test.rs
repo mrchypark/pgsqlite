@@ -19,7 +19,9 @@ async fn test_pg_proc_basic() {
         while let Ok((stream, client_addr)) = listener.accept().await {
             let db_clone = db_handler.clone();
             tokio::spawn(async move {
-                if let Err(e) = handle_test_connection_with_pool(stream, client_addr, db_clone).await {
+                if let Err(e) =
+                    handle_test_connection_with_pool(stream, client_addr, db_clone).await
+                {
                     eprintln!("Connection error: {}", e);
                 }
             });
@@ -28,9 +30,14 @@ async fn test_pg_proc_basic() {
 
     // Connect client
     let (client, connection) = tokio_postgres::connect(
-        &format!("host=127.0.0.1 port={} user=postgres dbname=test", addr.port()),
+        &format!(
+            "host=127.0.0.1 port={} user=postgres dbname=test",
+            addr.port()
+        ),
         NoTls,
-    ).await.unwrap();
+    )
+    .await
+    .unwrap();
 
     // Spawn connection task
     tokio::spawn(async move {
@@ -40,7 +47,13 @@ async fn test_pg_proc_basic() {
     });
 
     // Test basic pg_proc query
-    let rows = client.query("SELECT proname, prokind FROM pg_proc WHERE proname = 'length'", &[]).await.unwrap();
+    let rows = client
+        .query(
+            "SELECT proname, prokind FROM pg_proc WHERE proname = 'length'",
+            &[],
+        )
+        .await
+        .unwrap();
     assert!(!rows.is_empty(), "Should find length function");
 
     let row = &rows[0];
@@ -52,14 +65,24 @@ async fn test_pg_proc_basic() {
     println!("✅ Found function: {} (kind: {})", proname, prokind);
 
     // Test wildcard query
-    let rows = client.query("SELECT * FROM pg_proc WHERE proname = 'count'", &[]).await.unwrap();
+    let rows = client
+        .query("SELECT * FROM pg_proc WHERE proname = 'count'", &[])
+        .await
+        .unwrap();
     assert!(!rows.is_empty(), "Should find count function");
     println!("✅ Wildcard query returned {} columns", rows[0].len());
 
     // Test function count - should have many built-in functions
-    let rows = client.query("SELECT COUNT(*) FROM pg_proc", &[]).await.unwrap();
+    let rows = client
+        .query("SELECT COUNT(*) FROM pg_proc", &[])
+        .await
+        .unwrap();
     let count: i64 = rows[0].get(0);
-    assert!(count > 20, "Should have many built-in functions, got {}", count);
+    assert!(
+        count > 20,
+        "Should have many built-in functions, got {}",
+        count
+    );
     println!("✅ Found {} functions total", count);
 
     println!("🎉 pg_proc basic functionality test passed!");
@@ -78,7 +101,9 @@ async fn test_pg_proc_contains_pg16_probe_functions() {
         while let Ok((stream, client_addr)) = listener.accept().await {
             let db_clone = db_handler.clone();
             tokio::spawn(async move {
-                if let Err(e) = handle_test_connection_with_pool(stream, client_addr, db_clone).await {
+                if let Err(e) =
+                    handle_test_connection_with_pool(stream, client_addr, db_clone).await
+                {
                     eprintln!("Connection error: {}", e);
                 }
             });
@@ -86,7 +111,10 @@ async fn test_pg_proc_contains_pg16_probe_functions() {
     });
 
     let (client, connection) = tokio_postgres::connect(
-        &format!("host=127.0.0.1 port={} user=postgres dbname=test", addr.port()),
+        &format!(
+            "host=127.0.0.1 port={} user=postgres dbname=test",
+            addr.port()
+        ),
         NoTls,
     )
     .await
@@ -136,7 +164,9 @@ async fn test_pg_proc_psql_df_compatibility() {
         while let Ok((stream, client_addr)) = listener.accept().await {
             let db_clone = db_handler.clone();
             tokio::spawn(async move {
-                if let Err(e) = handle_test_connection_with_pool(stream, client_addr, db_clone).await {
+                if let Err(e) =
+                    handle_test_connection_with_pool(stream, client_addr, db_clone).await
+                {
                     eprintln!("Connection error: {}", e);
                 }
             });
@@ -145,9 +175,14 @@ async fn test_pg_proc_psql_df_compatibility() {
 
     // Connect client
     let (client, connection) = tokio_postgres::connect(
-        &format!("host=127.0.0.1 port={} user=postgres dbname=test", addr.port()),
+        &format!(
+            "host=127.0.0.1 port={} user=postgres dbname=test",
+            addr.port()
+        ),
         NoTls,
-    ).await.unwrap();
+    )
+    .await
+    .unwrap();
 
     // Spawn connection task
     tokio::spawn(async move {
@@ -171,8 +206,11 @@ async fn test_pg_proc_psql_df_compatibility() {
     for row in &rows {
         let proname: String = row.get(0);
         let prokind: String = row.get(1);
-        let prorettype: i32 = row.get(2);  // OID of return type
-        println!("Function: {} (kind: {}, return type OID: {})", proname, prokind, prorettype);
+        let prorettype: i32 = row.get(2); // OID of return type
+        println!(
+            "Function: {} (kind: {}, return type OID: {})",
+            proname, prokind, prorettype
+        );
     }
 
     println!("✅ Found {} functions in \\df-style query", rows.len());

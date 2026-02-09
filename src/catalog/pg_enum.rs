@@ -1,6 +1,6 @@
-use crate::session::db_handler::{DbHandler, DbResponse};
 use crate::metadata::EnumMetadata;
-use sqlparser::ast::{Select, SelectItem, Expr};
+use crate::session::db_handler::{DbHandler, DbResponse};
+use sqlparser::ast::{Expr, Select, SelectItem};
 use tracing::{debug, info};
 
 /// Handler for pg_enum catalog queries
@@ -11,15 +11,15 @@ impl PgEnumHandler {
     pub async fn handle_query(select: &Select, db: &DbHandler) -> Result<DbResponse, String> {
         info!("Handling pg_enum query");
         debug!("pg_enum query selection: {:?}", select.selection);
-        
+
         // pg_enum columns:
         // oid          - OID of the enum value
         // enumtypid    - OID of the enum type this value belongs to
         // enumsortorder - Sort position of this value within its enum type
         // enumlabel    - Textual label for this enum value
-        
+
         let mut columns = vec![];
-        
+
         // Determine which columns are being selected
         for item in select.projection.iter() {
             match item {
@@ -33,36 +33,48 @@ impl PgEnumHandler {
                 }
                 SelectItem::Wildcard(_) => {
                     // Return all columns
-                    columns = vec!["oid".to_string(), "enumtypid".to_string(), 
-                                  "enumsortorder".to_string(), "enumlabel".to_string()];
+                    columns = vec![
+                        "oid".to_string(),
+                        "enumtypid".to_string(),
+                        "enumsortorder".to_string(),
+                        "enumlabel".to_string(),
+                    ];
                     break;
                 }
                 _ => {}
             }
         }
-        
+
         // If no specific columns, default to all
         if columns.is_empty() {
-            columns = vec!["oid".to_string(), "enumtypid".to_string(), 
-                          "enumsortorder".to_string(), "enumlabel".to_string()];
+            columns = vec![
+                "oid".to_string(),
+                "enumtypid".to_string(),
+                "enumsortorder".to_string(),
+                "enumlabel".to_string(),
+            ];
         }
-        
+
         // Check for WHERE clause filtering
         let mut filter_type_oid = None;
         let mut filter_value_oid = None;
-        
+
         if let Some(selection) = &select.selection {
             Self::extract_filters(selection, &mut filter_type_oid, &mut filter_value_oid);
         }
-        
+
         // Get connection for metadata queries
-        let conn = db.get_mut_connection()
+        let conn = db
+            .get_mut_connection()
             .map_err(|e| format!("Failed to get connection: {e}"))?;
-        
+
         let mut rows = Vec::new();
-        
-        debug!("pg_enum filters - type_oid: {:?}, value_oid: {:?}", filter_type_oid, filter_value_oid);
-        
+
+        debug!(
+            "pg_enum filters - type_oid: {:?}, value_oid: {:?}",
+            filter_type_oid, filter_value_oid
+        );
+
         if let Some(type_oid) = filter_type_oid {
             // Filter by enum type
             debug!("Filtering pg_enum by enumtypid = {}", type_oid);
@@ -94,20 +106,20 @@ impl PgEnumHandler {
                 }
             }
         }
-        
+
         let rows_affected = rows.len();
-        
+
         Ok(DbResponse {
             columns: columns.clone(),
             rows,
             rows_affected,
         })
     }
-    
+
     /// Build a row for the selected columns
     fn build_row(columns: &[String], value: &crate::metadata::EnumValue) -> Vec<Option<Vec<u8>>> {
         let mut row = Vec::new();
-        
+
         for col in columns {
             let cell = match col.as_str() {
                 "oid" => Some(value.value_oid.to_string().into_bytes()),
@@ -118,12 +130,16 @@ impl PgEnumHandler {
             };
             row.push(cell);
         }
-        
+
         row
     }
-    
+
     /// Extract filter conditions from WHERE clause
-    fn extract_filters(expr: &Expr, filter_type_oid: &mut Option<i32>, filter_value_oid: &mut Option<i32>) {
+    fn extract_filters(
+        expr: &Expr,
+        filter_type_oid: &mut Option<i32>,
+        filter_value_oid: &mut Option<i32>,
+    ) {
         match expr {
             Expr::BinaryOp { left, op, right } => {
                 if matches!(op, sqlparser::ast::BinaryOperator::Eq) {
@@ -134,45 +150,59 @@ impl PgEnumHandler {
                         Expr::Identifier(ident) => Some(ident.value.to_lowercase()),
                         _ => None,
                     };
-                    
+
                     if let Some(col) = column_name {
                         match col.as_str() {
                             "enumtypid" => {
                                 match right.as_ref() {
-                                    Expr::Value(sqlparser::ast::ValueWithSpan { 
-                                        value: sqlparser::ast::Value::Number(n, _), .. 
+                                    Expr::Value(sqlparser::ast::ValueWithSpan {
+                                        value: sqlparser::ast::Value::Number(n, _),
+                                        ..
                                     }) => {
                                         *filter_type_oid = n.parse().ok();
-                                        debug!("Extracted numeric enumtypid filter: {:?}", filter_type_oid);
+                                        debug!(
+                                            "Extracted numeric enumtypid filter: {:?}",
+                                            filter_type_oid
+                                        );
                                     }
-                                    Expr::Value(sqlparser::ast::ValueWithSpan { 
-                                        value: sqlparser::ast::Value::SingleQuotedString(s), .. 
+                                    Expr::Value(sqlparser::ast::ValueWithSpan {
+                                        value: sqlparser::ast::Value::SingleQuotedString(s),
+                                        ..
                                     }) => {
                                         // Handle quoted numeric strings (from parameter substitution)
                                         *filter_type_oid = s.parse().ok();
-                                        debug!("Extracted string enumtypid filter: {:?}", filter_type_oid);
+                                        debug!(
+                                            "Extracted string enumtypid filter: {:?}",
+                                            filter_type_oid
+                                        );
                                     }
-                                    Expr::Value(sqlparser::ast::ValueWithSpan { 
-                                        value: sqlparser::ast::Value::Placeholder(_), .. 
+                                    Expr::Value(sqlparser::ast::ValueWithSpan {
+                                        value: sqlparser::ast::Value::Placeholder(_),
+                                        ..
                                     }) => {
                                         // For placeholders, we can't filter at this stage
                                         // The actual filtering will happen when the query is executed
                                         debug!("Placeholder detected for enumtypid filter");
                                     }
                                     _ => {
-                                        debug!("Unknown expression type for enumtypid: {:?}", right);
+                                        debug!(
+                                            "Unknown expression type for enumtypid: {:?}",
+                                            right
+                                        );
                                     }
                                 }
                             }
                             "oid" => {
                                 match right.as_ref() {
-                                    Expr::Value(sqlparser::ast::ValueWithSpan { 
-                                        value: sqlparser::ast::Value::Number(n, _), .. 
+                                    Expr::Value(sqlparser::ast::ValueWithSpan {
+                                        value: sqlparser::ast::Value::Number(n, _),
+                                        ..
                                     }) => {
                                         *filter_value_oid = n.parse().ok();
                                     }
-                                    Expr::Value(sqlparser::ast::ValueWithSpan { 
-                                        value: sqlparser::ast::Value::SingleQuotedString(s), .. 
+                                    Expr::Value(sqlparser::ast::ValueWithSpan {
+                                        value: sqlparser::ast::Value::SingleQuotedString(s),
+                                        ..
                                     }) => {
                                         // Handle quoted numeric strings
                                         *filter_value_oid = s.parse().ok();
@@ -185,15 +215,22 @@ impl PgEnumHandler {
                     }
                 }
             }
-            Expr::InList { expr, list, negated: false } => {
+            Expr::InList {
+                expr,
+                list,
+                negated: false,
+            } => {
                 // Handle IN clauses
                 if let Expr::Identifier(ident) = expr.as_ref()
-                    && ident.value.to_lowercase() == "enumtypid" && list.len() == 1
-                        && let Expr::Value(sqlparser::ast::ValueWithSpan { 
-                            value: sqlparser::ast::Value::Number(n, _), .. 
-                        }) = &list[0] {
-                            *filter_type_oid = n.parse().ok();
-                        }
+                    && ident.value.to_lowercase() == "enumtypid"
+                    && list.len() == 1
+                    && let Expr::Value(sqlparser::ast::ValueWithSpan {
+                        value: sqlparser::ast::Value::Number(n, _),
+                        ..
+                    }) = &list[0]
+                {
+                    *filter_type_oid = n.parse().ok();
+                }
             }
             _ => {}
         }

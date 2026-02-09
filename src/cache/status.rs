@@ -17,13 +17,13 @@ pub struct CacheStatus {
 pub fn get_cache_status() -> CacheStatus {
     let metrics = GLOBAL_QUERY_CACHE.get_metrics();
     let (cache_size, _) = GLOBAL_QUERY_CACHE.stats();
-    
+
     let hit_rate = if metrics.total_queries > 0 {
         (metrics.cache_hits as f64 / metrics.total_queries as f64) * 100.0
     } else {
         0.0
     };
-    
+
     CacheStatus {
         total_queries: metrics.total_queries,
         cache_hits: metrics.cache_hits,
@@ -38,12 +38,9 @@ pub fn get_cache_status() -> CacheStatus {
 /// Format cache status as a PostgreSQL result set
 pub fn format_cache_status_as_table() -> (Vec<String>, DbRows) {
     let status = get_cache_status();
-    
-    let columns = vec![
-        "metric".to_string(),
-        "value".to_string(),
-    ];
-    
+
+    let columns = vec!["metric".to_string(), "value".to_string()];
+
     let rows = vec![
         vec![
             Some(b"total_queries".to_vec()),
@@ -74,14 +71,14 @@ pub fn format_cache_status_as_table() -> (Vec<String>, DbRows) {
             Some(status.cache_capacity.to_string().into_bytes()),
         ],
     ];
-    
+
     (columns, rows)
 }
 
 /// Log cache status to tracing
 pub fn log_cache_status() {
     let status = get_cache_status();
-    
+
     tracing::info!(
         "Query Cache Status - Total: {}, Hits: {} ({:.1}%), Misses: {}, Evictions: {}, Size: {}/{}",
         status.total_queries,

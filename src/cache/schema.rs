@@ -1,8 +1,8 @@
+use crate::types::PgType;
+use rusqlite::Connection;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
-use rusqlite::Connection;
-use crate::types::PgType;
 
 /// Represents column information for a table
 #[derive(Clone, Debug)]
@@ -46,23 +46,27 @@ impl SchemaCache {
     /// Get cached schema for a table
     pub fn get(&self, table_name: &str) -> Option<TableSchema> {
         let cache = self.cache.read().unwrap();
-        
+
         if let Some(entry) = cache.get(table_name)
-            && entry.cached_at.elapsed() < self.ttl {
-                return Some(entry.schema.clone());
-            }
-        
+            && entry.cached_at.elapsed() < self.ttl
+        {
+            return Some(entry.schema.clone());
+        }
+
         None
     }
 
     /// Cache schema for a table
     pub fn insert(&self, table_name: String, schema: TableSchema) {
         let mut cache = self.cache.write().unwrap();
-        
-        cache.insert(table_name, CacheEntry {
-            schema,
-            cached_at: Instant::now(),
-        });
+
+        cache.insert(
+            table_name,
+            CacheEntry {
+                schema,
+                cached_at: Instant::now(),
+            },
+        );
     }
 
     /// Invalidate cache for a specific table (e.g., after ALTER TABLE)
@@ -81,7 +85,7 @@ impl SchemaCache {
     pub fn build_table_schema(columns: Vec<(String, String, String, i32)>) -> TableSchema {
         let mut column_infos = Vec::new();
         let mut column_map = HashMap::new();
-        
+
         for (name, pg_type, sqlite_type, pg_oid) in columns {
             let info = ColumnInfo {
                 name: name.clone(),
@@ -89,11 +93,11 @@ impl SchemaCache {
                 pg_oid,
                 sqlite_type,
             };
-            
+
             column_map.insert(name.to_lowercase(), info.clone());
             column_infos.push(info);
         }
-        
+
         TableSchema {
             columns: column_infos,
             column_map,
@@ -131,18 +135,22 @@ impl SchemaCache {
         for table_name in table_names {
             if let Ok(schema) = self.load_table_schema_direct(conn, &table_name) {
                 // Check for decimal columns
-                let has_decimal = schema.columns.iter().any(|col| {
-                    col.pg_type == "numeric" || col.pg_oid == PgType::Numeric.to_oid()
-                });
-                
+                let has_decimal = schema
+                    .columns
+                    .iter()
+                    .any(|col| col.pg_type == "numeric" || col.pg_oid == PgType::Numeric.to_oid());
+
                 if has_decimal {
                     decimal_tables_set.insert(table_name.clone());
                 }
 
-                all_schemas.insert(table_name, CacheEntry {
-                    schema,
-                    cached_at: Instant::now(),
-                });
+                all_schemas.insert(
+                    table_name,
+                    CacheEntry {
+                        schema,
+                        cached_at: Instant::now(),
+                    },
+                );
             }
         }
 
@@ -161,9 +169,13 @@ impl SchemaCache {
     }
 
     /// Load a single table schema directly from database (bypassing cache)
-    fn load_table_schema_direct(&self, conn: &Connection, table_name: &str) -> Result<TableSchema, rusqlite::Error> {
+    fn load_table_schema_direct(
+        &self,
+        conn: &Connection,
+        table_name: &str,
+    ) -> Result<TableSchema, rusqlite::Error> {
         let mut column_data = Vec::new();
-        
+
         // First get all columns from SQLite schema
         let pragma_query = format!("PRAGMA table_info({table_name})");
         let mut stmt = conn.prepare(&pragma_query)?;
@@ -172,7 +184,7 @@ impl SchemaCache {
             let sqlite_type: String = row.get(2)?;
             Ok((name, sqlite_type))
         })?;
-        
+
         let mut sqlite_columns = Vec::new();
         for row in rows {
             sqlite_columns.push(row?);
@@ -180,16 +192,18 @@ impl SchemaCache {
 
         // Bulk query for all PostgreSQL types for this table
         let mut pg_metadata = HashMap::new();
-        if let Ok(mut stmt) = conn.prepare("SELECT column_name, pg_type FROM __pgsqlite_schema WHERE table_name = ?1")
+        if let Ok(mut stmt) =
+            conn.prepare("SELECT column_name, pg_type FROM __pgsqlite_schema WHERE table_name = ?1")
             && let Ok(rows) = stmt.query_map([table_name], |row| {
                 let col_name: String = row.get(0)?;
                 let pg_type: String = row.get(1)?;
                 Ok((col_name, pg_type))
-            }) {
-                for row in rows.flatten() {
-                    pg_metadata.insert(row.0, row.1);
-                }
+            })
+        {
+            for row in rows.flatten() {
+                pg_metadata.insert(row.0, row.1);
             }
+        }
 
         // Build column data
         for (col_name, sqlite_type) in sqlite_columns {
@@ -204,7 +218,7 @@ impl SchemaCache {
                 let pg_type_str = match pg_type {
                     crate::types::PgType::Text => "text",
                     crate::types::PgType::Int8 => "int8",
-                    crate::types::PgType::Int4 => "int4", 
+                    crate::types::PgType::Int4 => "int4",
                     crate::types::PgType::Int2 => "int2",
                     crate::types::PgType::Float8 => "float8",
                     crate::types::PgType::Float4 => "float4",
@@ -238,15 +252,19 @@ impl SchemaCache {
                 };
                 (pg_type_str.to_string(), oid)
             };
-            
+
             column_data.push((col_name, pg_type, sqlite_type, pg_oid));
         }
-        
+
         Ok(Self::build_table_schema(column_data))
     }
 
     /// Get table schema with automatic preloading on first access
-    pub fn get_or_load(&self, conn: &Connection, table_name: &str) -> Result<TableSchema, rusqlite::Error> {
+    pub fn get_or_load(
+        &self,
+        conn: &Connection,
+        table_name: &str,
+    ) -> Result<TableSchema, rusqlite::Error> {
         // Try cache first
         if let Some(schema) = self.get(table_name) {
             return Ok(schema);
@@ -255,7 +273,7 @@ impl SchemaCache {
         // If all tables haven't been loaded yet, do bulk preload
         if !*self.all_tables_loaded.read().unwrap() {
             self.preload_all_schemas(conn)?;
-            
+
             // Try cache again after preload
             if let Some(schema) = self.get(table_name) {
                 return Ok(schema);
@@ -265,18 +283,22 @@ impl SchemaCache {
         // If still not found, load this specific table
         let schema = self.load_table_schema_direct(conn, table_name)?;
         self.insert(table_name.to_string(), schema.clone());
-        
+
         // Check for decimal columns and update bloom filter
-        let has_decimal = schema.columns.iter().any(|col| {
-            col.pg_type == "numeric" || col.pg_oid == PgType::Numeric.to_oid()
-        });
+        let has_decimal = schema
+            .columns
+            .iter()
+            .any(|col| col.pg_type == "numeric" || col.pg_oid == PgType::Numeric.to_oid());
         if has_decimal {
-            self.decimal_tables.write().unwrap().insert(table_name.to_string());
+            self.decimal_tables
+                .write()
+                .unwrap()
+                .insert(table_name.to_string());
         }
-        
+
         Ok(schema)
     }
-    
+
     /// Ensure schema is loaded for tables referenced in a query
     pub fn ensure_schema_loaded(&self, conn: &Connection, query: &str) {
         // Try to extract table names from the query
@@ -284,9 +306,10 @@ impl SchemaCache {
             for table_name in table_names {
                 // Try to load if not already in cache
                 if self.get(&table_name).is_none()
-                    && let Ok(schema) = self.load_table_schema_direct(conn, &table_name) {
-                        self.insert(table_name.clone(), schema);
-                    }
+                    && let Ok(schema) = self.load_table_schema_direct(conn, &table_name)
+                {
+                    self.insert(table_name.clone(), schema);
+                }
             }
         }
     }
@@ -296,7 +319,7 @@ impl SchemaCache {
 fn extract_table_names_simple(query: &str) -> Result<Vec<String>, String> {
     let query_upper = query.to_uppercase();
     let mut tables = Vec::new();
-    
+
     // Look for FROM clause
     if let Some(from_pos) = query_upper.find(" FROM ") {
         let after_from = &query[from_pos + 6..];
@@ -308,6 +331,6 @@ fn extract_table_names_simple(query: &str) -> Result<Vec<String>, String> {
             tables.push(table_name);
         }
     }
-    
+
     Ok(tables)
 }

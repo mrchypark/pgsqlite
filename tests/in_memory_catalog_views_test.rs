@@ -18,7 +18,9 @@ async fn test_pg_enum_view_available_in_shared_in_memory_uri() {
         if let Ok((stream, client_addr)) = listener.accept().await {
             let db_clone = db_handler.clone();
             tokio::spawn(async move {
-                if let Err(e) = pgsqlite::handle_test_connection_with_pool(stream, client_addr, db_clone).await {
+                if let Err(e) =
+                    pgsqlite::handle_test_connection_with_pool(stream, client_addr, db_clone).await
+                {
                     eprintln!("Connection error: {}", e);
                 }
             });
@@ -26,7 +28,10 @@ async fn test_pg_enum_view_available_in_shared_in_memory_uri() {
     });
 
     let (client, connection) = tokio_postgres::connect(
-        &format!("host=127.0.0.1 port={} user=postgres dbname={db_path}", addr.port()),
+        &format!(
+            "host=127.0.0.1 port={} user=postgres dbname={db_path}",
+            addr.port()
+        ),
         NoTls,
     )
     .await

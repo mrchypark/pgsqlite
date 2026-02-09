@@ -7,16 +7,16 @@ impl FunctionParenthesesTranslator {
     /// Check if translation is needed
     pub fn needs_translation(query: &str) -> bool {
         // Check for functions that might be called with empty parentheses
-        query.contains("current_user()") || 
-        query.contains("CURRENT_USER()") ||
-        query.contains("session_user()") ||
-        query.contains("SESSION_USER()")
+        query.contains("current_user()")
+            || query.contains("CURRENT_USER()")
+            || query.contains("session_user()")
+            || query.contains("SESSION_USER()")
     }
-    
+
     /// Translate function calls with empty parentheses to no parentheses
     pub fn translate_query(query: &str) -> String {
         let mut result = query.to_string();
-        
+
         // List of functions that should not have parentheses when called without arguments
         let functions = [
             ("current_user()", "current_user"),
@@ -24,11 +24,11 @@ impl FunctionParenthesesTranslator {
             ("session_user()", "session_user"),
             ("SESSION_USER()", "SESSION_USER"),
         ];
-        
+
         for (from, to) in &functions {
             result = result.replace(from, to);
         }
-        
+
         result
     }
 }
@@ -36,7 +36,7 @@ impl FunctionParenthesesTranslator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_current_user_translation() {
         let query = "SELECT current_user()";
@@ -46,7 +46,7 @@ mod tests {
             "SELECT current_user"
         );
     }
-    
+
     #[test]
     fn test_uppercase_translation() {
         let query = "SELECT CURRENT_USER()";
@@ -56,14 +56,11 @@ mod tests {
             "SELECT CURRENT_USER"
         );
     }
-    
+
     #[test]
     fn test_no_translation_needed() {
         let query = "SELECT version()";
         assert!(!FunctionParenthesesTranslator::needs_translation(query));
-        assert_eq!(
-            FunctionParenthesesTranslator::translate_query(query),
-            query
-        );
+        assert_eq!(FunctionParenthesesTranslator::translate_query(query), query);
     }
 }

@@ -9,7 +9,8 @@ async fn test_django_style_constraint_discovery() {
     let server = setup_test_server_with_init(|db| {
         Box::pin(async move {
             // Create a typical Django-style schema
-            db.execute(r#"
+            db.execute(
+                r#"
                 CREATE TABLE users (
                     id INTEGER PRIMARY KEY,
                     username VARCHAR(150) UNIQUE,
@@ -18,9 +19,12 @@ async fn test_django_style_constraint_discovery() {
                     last_name VARCHAR(150),
                     created_at TIMESTAMP
                 )
-            "#).await?;
+            "#,
+            )
+            .await?;
 
-            db.execute(r#"
+            db.execute(
+                r#"
                 CREATE TABLE posts (
                     id INTEGER PRIMARY KEY,
                     title VARCHAR(200) NOT NULL,
@@ -28,9 +32,12 @@ async fn test_django_style_constraint_discovery() {
                     author_id INTEGER REFERENCES users(id),
                     created_at TIMESTAMP
                 )
-            "#).await?;
+            "#,
+            )
+            .await?;
 
-            db.execute(r#"
+            db.execute(
+                r#"
                 CREATE TABLE comments (
                     id INTEGER PRIMARY KEY,
                     content TEXT NOT NULL,
@@ -38,23 +45,29 @@ async fn test_django_style_constraint_discovery() {
                     author_id INTEGER REFERENCES users(id),
                     created_at TIMESTAMP
                 )
-            "#).await?;
+            "#,
+            )
+            .await?;
 
             Ok(())
         })
-    }).await;
+    })
+    .await;
     let client = &server.client;
 
     // 1. Django inspectdb: Query column information
-    let columns = client.query(
-        r#"
+    let columns = client
+        .query(
+            r#"
         SELECT table_name, column_name, data_type, is_nullable, column_default
         FROM information_schema.columns
         WHERE table_schema = 'public'
         ORDER BY table_name, ordinal_position
         "#,
-        &[]
-    ).await.unwrap();
+            &[],
+        )
+        .await
+        .unwrap();
 
     // Should have columns for all tables
     assert!(!columns.is_empty(), "Should have column information");
@@ -69,8 +82,9 @@ async fn test_django_style_constraint_discovery() {
     assert!(tables_found.contains("comments"));
 
     // 2. Django foreign key discovery: Query constraint relationships
-    let foreign_keys = client.query(
-        r#"
+    let foreign_keys = client
+        .query(
+            r#"
         SELECT
             tc.table_name,
             tc.constraint_name,
@@ -82,11 +96,16 @@ async fn test_django_style_constraint_discovery() {
         WHERE tc.constraint_type = 'FOREIGN KEY'
         ORDER BY tc.table_name, kcu.ordinal_position
         "#,
-        &[]
-    ).await.unwrap();
+            &[],
+        )
+        .await
+        .unwrap();
 
     // Should find foreign key relationships
-    assert!(!foreign_keys.is_empty(), "Should have foreign key constraints");
+    assert!(
+        !foreign_keys.is_empty(),
+        "Should have foreign key constraints"
+    );
 
     let mut fk_relationships = std::collections::HashSet::new();
     for row in &foreign_keys {
@@ -96,13 +115,18 @@ async fn test_django_style_constraint_discovery() {
     }
 
     // Should find specific foreign keys
-    assert!(fk_relationships.contains("posts:author_id") ||
-            fk_relationships.iter().any(|fk| fk.contains("posts") && fk.contains("author_id")),
-            "Should find posts.author_id foreign key");
+    assert!(
+        fk_relationships.contains("posts:author_id")
+            || fk_relationships
+                .iter()
+                .any(|fk| fk.contains("posts") && fk.contains("author_id")),
+        "Should find posts.author_id foreign key"
+    );
 
     // 3. Rails-style constraint enumeration
-    let all_constraints = client.query(
-        r#"
+    let all_constraints = client
+        .query(
+            r#"
         SELECT
             constraint_name,
             table_name,
@@ -110,8 +134,10 @@ async fn test_django_style_constraint_discovery() {
         FROM information_schema.table_constraints
         ORDER BY table_name, constraint_type, constraint_name
         "#,
-        &[]
-    ).await.unwrap();
+            &[],
+        )
+        .await
+        .unwrap();
 
     // Should have various constraint types
     assert!(!all_constraints.is_empty(), "Should have constraints");
@@ -123,11 +149,15 @@ async fn test_django_style_constraint_discovery() {
     }
 
     // Should have at least primary keys
-    assert!(constraint_types.contains("PRIMARY KEY"), "Should have primary key constraints");
+    assert!(
+        constraint_types.contains("PRIMARY KEY"),
+        "Should have primary key constraints"
+    );
 
     // 4. Detailed column metadata query (SQLAlchemy-style)
-    let detailed_columns = client.query(
-        r#"
+    let detailed_columns = client
+        .query(
+            r#"
         SELECT
             c.table_name,
             c.column_name,
@@ -142,11 +172,16 @@ async fn test_django_style_constraint_discovery() {
         WHERE c.table_name = 'users'
         ORDER BY c.ordinal_position
         "#,
-        &[]
-    ).await.unwrap();
+            &[],
+        )
+        .await
+        .unwrap();
 
     // Should have detailed metadata for users table
-    assert!(!detailed_columns.is_empty(), "Should have detailed column metadata");
+    assert!(
+        !detailed_columns.is_empty(),
+        "Should have detailed column metadata"
+    );
 
     for row in &detailed_columns {
         let column_name: &str = row.get(1);
@@ -157,7 +192,10 @@ async fn test_django_style_constraint_discovery() {
         // Verify basic sanity
         assert!(!column_name.is_empty(), "Column name should not be empty");
         assert!(!data_type.is_empty(), "Data type should not be empty");
-        assert!(matches!(is_nullable, "YES" | "NO"), "is_nullable should be YES or NO");
+        assert!(
+            matches!(is_nullable, "YES" | "NO"),
+            "is_nullable should be YES or NO"
+        );
         assert!(ordinal_position > 0, "Ordinal position should be positive");
     }
 }
@@ -170,31 +208,39 @@ async fn test_rails_style_constraint_discovery() {
     let server = setup_test_server_with_init(|db| {
         Box::pin(async move {
             // Create tables with Rails-style naming
-            db.execute(r#"
+            db.execute(
+                r#"
                 CREATE TABLE categories (
                     id INTEGER PRIMARY KEY,
                     name VARCHAR(100) UNIQUE,
                     parent_id INTEGER REFERENCES categories(id)
                 )
-            "#).await?;
+            "#,
+            )
+            .await?;
 
-            db.execute(r#"
+            db.execute(
+                r#"
                 CREATE TABLE articles (
                     id INTEGER PRIMARY KEY,
                     title VARCHAR(255) NOT NULL,
                     slug VARCHAR(255) UNIQUE,
                     category_id INTEGER REFERENCES categories(id)
                 )
-            "#).await?;
+            "#,
+            )
+            .await?;
 
             Ok(())
         })
-    }).await;
+    })
+    .await;
     let client = &server.client;
 
     // Rails-style query to get all constraints for a table
-    let constraints = client.query(
-        r#"
+    let constraints = client
+        .query(
+            r#"
         SELECT DISTINCT
             tc.constraint_name,
             tc.constraint_type,
@@ -207,10 +253,15 @@ async fn test_rails_style_constraint_discovery() {
         WHERE tc.table_name = 'articles'
         ORDER BY tc.constraint_type, kcu.ordinal_position
         "#,
-        &[]
-    ).await.unwrap();
+            &[],
+        )
+        .await
+        .unwrap();
 
-    assert!(!constraints.is_empty(), "Should find constraints for articles table");
+    assert!(
+        !constraints.is_empty(),
+        "Should find constraints for articles table"
+    );
 
     // Verify we can discover different types of constraints
     let mut found_primary_key = false;
@@ -237,24 +288,31 @@ async fn test_comprehensive_orm_compatibility() {
 
     let server = setup_test_server_with_init(|db| {
         Box::pin(async move {
-            db.execute(r#"
+            db.execute(
+                r#"
                 CREATE TABLE test_table (
                     id INTEGER PRIMARY KEY,
                     name VARCHAR(100) NOT NULL,
                     code VARCHAR(20) UNIQUE,
                     parent_id INTEGER REFERENCES test_table(id)
                 )
-            "#).await?;
+            "#,
+            )
+            .await?;
             Ok(())
         })
-    }).await;
+    })
+    .await;
     let client = &server.client;
 
     // Test 1: information_schema.tables
-    let tables = client.query(
-        "SELECT table_name FROM information_schema.tables WHERE table_name = 'test_table'",
-        &[]
-    ).await.unwrap();
+    let tables = client
+        .query(
+            "SELECT table_name FROM information_schema.tables WHERE table_name = 'test_table'",
+            &[],
+        )
+        .await
+        .unwrap();
     assert_eq!(tables.len(), 1, "Should find test_table");
 
     // Test 2: information_schema.columns

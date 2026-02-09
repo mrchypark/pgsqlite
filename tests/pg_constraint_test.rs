@@ -19,7 +19,10 @@ async fn test_pg_constraint_basic() {
     let client = &server.client;
 
     // Test basic constraint query
-    let rows = client.query("SELECT conname, contype FROM pg_constraint", &[]).await.unwrap();
+    let rows = client
+        .query("SELECT conname, contype FROM pg_constraint", &[])
+        .await
+        .unwrap();
 
     println!("Found {} constraints", rows.len());
     for row in &rows {
@@ -29,14 +32,18 @@ async fn test_pg_constraint_basic() {
     }
 
     // Should have at least primary key constraints
-    assert!(rows.len() >= 2, "Should have at least 2 constraints (primary keys)");
+    assert!(
+        rows.len() >= 2,
+        "Should have at least 2 constraints (primary keys)"
+    );
 
     // Check constraint types
-    let constraint_types: Vec<&str> = rows.iter()
-        .map(|row| row.get::<_, &str>(1))
-        .collect();
+    let constraint_types: Vec<&str> = rows.iter().map(|row| row.get::<_, &str>(1)).collect();
 
-    assert!(constraint_types.contains(&"p"), "Should have primary key constraints");
+    assert!(
+        constraint_types.contains(&"p"),
+        "Should have primary key constraints"
+    );
 }
 
 #[tokio::test]
@@ -66,17 +73,22 @@ async fn test_pg_constraint_foreign_keys() {
     for row in &rows {
         let conname: &str = row.get(0);
         let contype: &str = row.get(1);
-        let conrelid: &str = row.get(2);  // conrelid is OID type (as string)
-        let confrelid: &str = row.get(3);  // confrelid is OID type (as string)
+        let conrelid: &str = row.get(2); // conrelid is OID type (as string)
+        let confrelid: &str = row.get(3); // confrelid is OID type (as string)
         let conkey: &str = row.get(4);
         let confkey: &str = row.get(5);
 
-        println!("  FK: {} (type: {}, from: {} to: {}, columns: {} -> {})",
-                 conname, contype, conrelid, confrelid, conkey, confkey);
+        println!(
+            "  FK: {} (type: {}, from: {} to: {}, columns: {} -> {})",
+            conname, contype, conrelid, confrelid, conkey, confkey
+        );
     }
 
     // Should have at least one foreign key
-    assert!(!rows.is_empty(), "Should have at least 1 foreign key constraint");
+    assert!(
+        !rows.is_empty(),
+        "Should have at least 1 foreign key constraint"
+    );
 
     // Check that it's actually a foreign key
     let fk_row = &rows[0];
@@ -84,9 +96,12 @@ async fn test_pg_constraint_foreign_keys() {
     assert_eq!(contype, "f", "Should be foreign key type");
 
     // Check that referenced table is different from source table
-    let conrelid: &str = fk_row.get(2);  // OID type (as string)
-    let confrelid: &str = fk_row.get(3);  // OID type (as string)
-    assert_ne!(conrelid, confrelid, "Source and target tables should be different");
+    let conrelid: &str = fk_row.get(2); // OID type (as string)
+    let confrelid: &str = fk_row.get(3); // OID type (as string)
+    assert_ne!(
+        conrelid, confrelid,
+        "Source and target tables should be different"
+    );
 }
 
 #[tokio::test]
@@ -99,17 +114,22 @@ async fn test_pg_constraint_primary_keys() {
             db.execute("PRAGMA foreign_keys = ON").await?;
 
             // Create table with primary key
-            db.execute("CREATE TABLE products (id INTEGER PRIMARY KEY, name TEXT, price REAL)").await?;
+            db.execute("CREATE TABLE products (id INTEGER PRIMARY KEY, name TEXT, price REAL)")
+                .await?;
             Ok(())
         })
-    }).await;
+    })
+    .await;
     let client = &server.client;
 
     // Test primary key discovery - common Rails/Django pattern
-    let rows = client.query(
-        "SELECT conname, contype, conkey FROM pg_constraint WHERE contype = 'p'",
-        &[]
-    ).await.unwrap();
+    let rows = client
+        .query(
+            "SELECT conname, contype, conkey FROM pg_constraint WHERE contype = 'p'",
+            &[],
+        )
+        .await
+        .unwrap();
 
     println!("Found {} primary key constraints", rows.len());
     for row in &rows {
@@ -121,7 +141,10 @@ async fn test_pg_constraint_primary_keys() {
     }
 
     // Should have at least one primary key
-    assert!(!rows.is_empty(), "Should have at least 1 primary key constraint");
+    assert!(
+        !rows.is_empty(),
+        "Should have at least 1 primary key constraint"
+    );
 
     // Check that it's actually a primary key
     let pk_row = &rows[0];
@@ -130,7 +153,10 @@ async fn test_pg_constraint_primary_keys() {
 
     // Check constraint name pattern
     let conname: &str = pk_row.get(0);
-    assert!(conname.contains("pkey"), "Primary key name should contain 'pkey'");
+    assert!(
+        conname.contains("pkey"),
+        "Primary key name should contain 'pkey'"
+    );
 }
 
 #[tokio::test]
@@ -160,12 +186,14 @@ async fn test_pg_constraint_sqlalchemy_pattern() {
     for row in &rows {
         let conname: &str = row.get(0);
         let contype: &str = row.get(1);
-        let condeferrable: bool = row.get(2);  // BOOLEAN type
-        let condeferred: bool = row.get(3);    // BOOLEAN type
-        let convalidated: bool = row.get(4);   // BOOLEAN type
+        let condeferrable: bool = row.get(2); // BOOLEAN type
+        let condeferred: bool = row.get(3); // BOOLEAN type
+        let convalidated: bool = row.get(4); // BOOLEAN type
 
-        println!("  Constraint: {} (type: {}, deferrable: {}, deferred: {}, validated: {})",
-                 conname, contype, condeferrable, condeferred, convalidated);
+        println!(
+            "  Constraint: {} (type: {}, deferrable: {}, deferred: {}, validated: {})",
+            conname, contype, condeferrable, condeferred, convalidated
+        );
     }
 
     // Should have at least 2 constraints (2 primary keys)
@@ -173,7 +201,7 @@ async fn test_pg_constraint_sqlalchemy_pattern() {
 
     // Check that all constraints are validated
     for row in &rows {
-        let convalidated: bool = row.get(4);  // BOOLEAN type
+        let convalidated: bool = row.get(4); // BOOLEAN type
         assert!(convalidated, "All constraints should be validated");
     }
 }
@@ -209,8 +237,10 @@ async fn test_pg_constraint_django_pattern() {
         let confdeltype: &str = row.get(3);
         let confmatchtype: &str = row.get(4);
 
-        println!("  FK: {} (type: {}, upd: {}, del: {}, match: {})",
-                 conname, contype, confupdtype, confdeltype, confmatchtype);
+        println!(
+            "  FK: {} (type: {}, upd: {}, del: {}, match: {})",
+            conname, contype, confupdtype, confdeltype, confmatchtype
+        );
     }
 
     // Should have at least one foreign key
@@ -222,7 +252,13 @@ async fn test_pg_constraint_django_pattern() {
     let confdeltype: &str = fk_row.get(3);
     let confmatchtype: &str = fk_row.get(4);
 
-    assert_eq!(confupdtype, "a", "Should default to NO ACTION (a) for updates");
-    assert_eq!(confdeltype, "a", "Should default to NO ACTION (a) for deletes");
+    assert_eq!(
+        confupdtype, "a",
+        "Should default to NO ACTION (a) for updates"
+    );
+    assert_eq!(
+        confdeltype, "a",
+        "Should default to NO ACTION (a) for deletes"
+    );
     assert_eq!(confmatchtype, "s", "Should default to SIMPLE (s) match");
 }

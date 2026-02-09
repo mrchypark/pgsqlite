@@ -230,13 +230,15 @@ pub(super) fn register_v17_pg_description_support(registry: &mut BTreeMap<u32, M
 
 /// Version 18: Add pg_roles and pg_user support
 pub(super) fn register_v18_pg_roles_user_support(registry: &mut BTreeMap<u32, Migration>) {
-    registry.insert(18, Migration {
-        version: 18,
-        name: "pg_roles_user_support",
-        description: "Add PostgreSQL pg_roles and pg_user views for user and role management",
-        up: MigrationAction::SqlBatch(&[
-            // Create pg_roles view for role information
-            r#"
+    registry.insert(
+        18,
+        Migration {
+            version: 18,
+            name: "pg_roles_user_support",
+            description: "Add PostgreSQL pg_roles and pg_user views for user and role management",
+            up: MigrationAction::SqlBatch(&[
+                // Create pg_roles view for role information
+                r#"
             CREATE VIEW IF NOT EXISTS pg_roles AS
             SELECT
                 10 as oid,
@@ -283,8 +285,8 @@ pub(super) fn register_v18_pg_roles_user_support(registry: &mut BTreeMap<u32, Mi
                 't' as rolbypassrls,
                 NULL as rolconfig;
             "#,
-            // Create pg_user view for user information
-            r#"
+                // Create pg_user view for user information
+                r#"
             CREATE VIEW IF NOT EXISTS pg_user AS
             SELECT
                 'postgres' as usename,
@@ -308,14 +310,15 @@ pub(super) fn register_v18_pg_roles_user_support(registry: &mut BTreeMap<u32, Mi
                 NULL as valuntil,
                 NULL as useconfig;
             "#,
-            // Update schema version
-            r#"
+                // Update schema version
+                r#"
             UPDATE __pgsqlite_metadata
             SET value = '18', updated_at = strftime('%s', 'now')
             WHERE key = 'schema_version';
             "#,
-        ]),
-        down: Some(MigrationAction::Sql(r#"
+            ]),
+            down: Some(MigrationAction::Sql(
+                r#"
             -- Remove pg_roles and pg_user views
             DROP VIEW IF EXISTS pg_roles;
             DROP VIEW IF EXISTS pg_user;
@@ -324,9 +327,11 @@ pub(super) fn register_v18_pg_roles_user_support(registry: &mut BTreeMap<u32, Mi
             UPDATE __pgsqlite_metadata
             SET value = '17', updated_at = strftime('%s', 'now')
             WHERE key = 'schema_version';
-        "#)),
-        dependencies: vec![17],
-    });
+        "#,
+            )),
+            dependencies: vec![17],
+        },
+    );
 }
 
 /// Version 19: Add pg_stats support for query optimization hints
@@ -356,7 +361,9 @@ pub(super) fn register_v19_pg_stats_support(registry: &mut BTreeMap<u32, Migrati
 }
 
 /// Version 20: Add information_schema.routines support for function metadata
-pub(super) fn register_v20_information_schema_routines_support(registry: &mut BTreeMap<u32, Migration>) {
+pub(super) fn register_v20_information_schema_routines_support(
+    registry: &mut BTreeMap<u32, Migration>,
+) {
     registry.insert(20, Migration {
         version: 20,
         name: "information_schema_routines_support",
@@ -382,7 +389,9 @@ pub(super) fn register_v20_information_schema_routines_support(registry: &mut BT
 }
 
 /// Version 21: Add information_schema.views support for view metadata
-pub(super) fn register_v21_information_schema_views_support(registry: &mut BTreeMap<u32, Migration>) {
+pub(super) fn register_v21_information_schema_views_support(
+    registry: &mut BTreeMap<u32, Migration>,
+) {
     registry.insert(21, Migration {
         version: 21,
         name: "information_schema_views_support",
@@ -407,7 +416,9 @@ pub(super) fn register_v21_information_schema_views_support(registry: &mut BTree
     });
 }
 
-pub(super) fn register_v22_information_schema_referential_constraints_support(registry: &mut BTreeMap<u32, Migration>) {
+pub(super) fn register_v22_information_schema_referential_constraints_support(
+    registry: &mut BTreeMap<u32, Migration>,
+) {
     registry.insert(22, Migration {
         version: 22,
         name: "information_schema_referential_constraints_support",
@@ -433,7 +444,9 @@ pub(super) fn register_v22_information_schema_referential_constraints_support(re
 }
 
 /// Version 23: information_schema.check_constraints support
-pub(super) fn register_v23_information_schema_check_constraints_support(registry: &mut BTreeMap<u32, Migration>) {
+pub(super) fn register_v23_information_schema_check_constraints_support(
+    registry: &mut BTreeMap<u32, Migration>,
+) {
     registry.insert(23, Migration {
         version: 23,
         name: "information_schema_check_constraints",

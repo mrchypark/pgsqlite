@@ -1,10 +1,10 @@
-use crate::session::db_handler::{DbHandler, DbResponse};
-use crate::PgSqliteError;
-use crate::types::PgType;
-use sqlparser::ast::{Select, Expr, Value as SqlValue, SelectItem};
-use tracing::debug;
-use std::collections::HashMap;
 use super::where_evaluator::WhereEvaluator;
+use crate::PgSqliteError;
+use crate::session::db_handler::{DbHandler, DbResponse};
+use crate::types::PgType;
+use sqlparser::ast::{Expr, Select, SelectItem, Value as SqlValue};
+use std::collections::HashMap;
+use tracing::debug;
 
 pub struct PgAttributeHandler;
 
@@ -19,7 +19,7 @@ impl PgAttributeHandler {
         if let Some(selection) = &select.selection {
             debug!("WHERE clause present: {:?}", selection);
         }
-        
+
         // All available columns in pg_attribute
         let all_columns = vec![
             "attrelid".to_string(),
@@ -49,10 +49,12 @@ impl PgAttributeHandler {
             "attmissingval".to_string(),
             "adsrc".to_string(), // Default expression from pg_attrdef (non-standard but useful)
         ];
-        
+
         // Determine which columns are selected
-        let (selected_columns, selected_indices) = if select.projection.is_empty() || 
-            (select.projection.len() == 1 && matches!(&select.projection[0], SelectItem::Wildcard(_))) {
+        let (selected_columns, selected_indices) = if select.projection.is_empty()
+            || (select.projection.len() == 1
+                && matches!(&select.projection[0], SelectItem::Wildcard(_)))
+        {
             // SELECT * or no projection - return all columns
             let indices: Vec<usize> = (0..all_columns.len()).collect();
             (all_columns.clone(), indices)
@@ -60,7 +62,7 @@ impl PgAttributeHandler {
             // Specific columns selected
             let mut columns = Vec::new();
             let mut indices = Vec::new();
-            
+
             for item in &select.projection {
                 match item {
                     SelectItem::UnnamedExpr(Expr::Identifier(ident)) => {
@@ -80,7 +82,10 @@ impl PgAttributeHandler {
                             }
                         }
                     }
-                    SelectItem::ExprWithAlias { expr: Expr::Identifier(ident), alias } => {
+                    SelectItem::ExprWithAlias {
+                        expr: Expr::Identifier(ident),
+                        alias,
+                    } => {
                         let col_name = ident.value.to_lowercase();
                         if let Some(idx) = all_columns.iter().position(|c| c == &col_name) {
                             columns.push(alias.value.clone());
@@ -92,52 +97,77 @@ impl PgAttributeHandler {
             }
             (columns, indices)
         };
-        
+
         // Create column mapping for WHERE evaluation (using all columns)
         let column_mapping: HashMap<String, usize> = all_columns
             .iter()
             .enumerate()
             .map(|(i, name)| (name.clone(), i))
             .collect();
-        
+
         // Check if there's a WHERE clause filtering by attrelid
         let filter_table = extract_table_filter(select);
-        
+
         let mut rows = Vec::new();
-        
+
         if let Some(table_name) = filter_table {
             // Query specific table
             debug!("PG_ATTRIBUTE: Filtering for specific table: {}", table_name);
-            add_table_attributes(&table_name, db, &mut rows, select, &column_mapping, &selected_indices, true).await?;
+            add_table_attributes(
+                &table_name,
+                db,
+                &mut rows,
+                select,
+                &column_mapping,
+                &selected_indices,
+                true,
+            )
+            .await?;
         } else {
             // Query all tables
             debug!("PG_ATTRIBUTE: No table filter found, querying all tables");
             let tables_response = db.query("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '__pgsqlite_%'").await?;
-            debug!("Found {} user tables in sqlite_master", tables_response.rows.len());
-            
+            debug!(
+                "Found {} user tables in sqlite_master",
+                tables_response.rows.len()
+            );
+
             for table_row in &tables_response.rows {
                 if let Some(Some(table_name_bytes)) = table_row.first() {
                     let table_name = String::from_utf8_lossy(table_name_bytes);
                     debug!("Found table in sqlite_master: {}", table_name);
-                    add_table_attributes(&table_name, db, &mut rows, select, &column_mapping, &selected_indices, false).await?;
+                    add_table_attributes(
+                        &table_name,
+                        db,
+                        &mut rows,
+                        select,
+                        &column_mapping,
+                        &selected_indices,
+                        false,
+                    )
+                    .await?;
                 }
             }
-            
+
             // Debug: Also check all tables without filters
             let all_tables_response = db.query("SELECT name, type FROM sqlite_master").await?;
-            debug!("Total objects in sqlite_master: {}", all_tables_response.rows.len());
+            debug!(
+                "Total objects in sqlite_master: {}",
+                all_tables_response.rows.len()
+            );
             for table_row in &all_tables_response.rows {
-                if let (Some(Some(name_bytes)), Some(Some(type_bytes))) = (table_row.first(), table_row.get(1)) {
+                if let (Some(Some(name_bytes)), Some(Some(type_bytes))) =
+                    (table_row.first(), table_row.get(1))
+                {
                     let name = String::from_utf8_lossy(name_bytes);
                     let obj_type = String::from_utf8_lossy(type_bytes);
                     debug!("sqlite_master object: {} (type: {})", name, obj_type);
                 }
             }
         }
-        
+
         let rows_affected = rows.len();
-        
-        
+
         Ok(DbResponse {
             columns: selected_columns,
             rows,
@@ -162,15 +192,19 @@ async fn add_table_attributes(
     // Get column information from PRAGMA
     let col_info_query = format!("PRAGMA table_info({table_name})");
     let col_info = db.query(&col_info_query).await?;
-    
-    debug!("PRAGMA table_info returned {} columns for table {}", col_info.rows.len(), table_name);
-    
+
+    debug!(
+        "PRAGMA table_info returned {} columns for table {}",
+        col_info.rows.len(),
+        table_name
+    );
+
     // Also check if we have type info in __pgsqlite_schema
     let schema_query = format!(
         "SELECT column_name, pg_type FROM __pgsqlite_schema WHERE table_name = '{table_name}'"
     );
     let schema_info = db.query(&schema_query).await.ok();
-    
+
     // Build a map of column name to pg_type
     let mut type_map = std::collections::HashMap::new();
     if let Some(schema) = schema_info {
@@ -182,59 +216,69 @@ async fn add_table_attributes(
             }
         }
     }
-    
+
     for (idx, col_row) in col_info.rows.iter().enumerate() {
         // PRAGMA table_info returns: cid, name, type, notnull, dflt_value, pk
         if let Some(Some(col_name_bytes)) = col_row.get(1) {
             let col_name = String::from_utf8_lossy(col_name_bytes);
-            let sqlite_type = col_row.get(2)
+            let sqlite_type = col_row
+                .get(2)
                 .and_then(|v| v.as_ref())
                 .map(|v| String::from_utf8_lossy(v).to_string())
                 .unwrap_or_else(|| "TEXT".to_string());
-            
-            let notnull = col_row.get(3)
+
+            let notnull = col_row
+                .get(3)
                 .and_then(|v| v.as_ref())
                 .map(|v| String::from_utf8_lossy(v) == "1")
                 .unwrap_or(false);
-                
+
             let has_default = col_row.get(4).and_then(|v| v.as_ref()).is_some();
 
             // Get the actual default expression from PRAGMA table_info
-            let default_expr = col_row.get(4)
+            let default_expr = col_row
+                .get(4)
                 .and_then(|v| v.as_ref())
                 .map(|v| String::from_utf8_lossy(v).to_string());
-            
+
             // Check if this column is a primary key (pk flag is at index 5)
-            let is_primary_key = col_row.get(5)
+            let is_primary_key = col_row
+                .get(5)
                 .and_then(|v| v.as_ref())
                 .map(|v| String::from_utf8_lossy(v) == "1")
                 .unwrap_or(false);
-            
+
             // PRIMARY KEY columns are implicitly NOT NULL in PostgreSQL
             let notnull = notnull || is_primary_key;
 
             // Determine if this is an identity/serial column
-            let (attidentity, attgenerated) = if is_primary_key && sqlite_type.to_uppercase().contains("INTEGER") {
-                // INTEGER PRIMARY KEY in SQLite behaves like PostgreSQL SERIAL
-                ("d", "") // 'd' = GENERATED BY DEFAULT (like SERIAL)
-            } else if let Some(ref default_val) = default_expr {
-                // Check for generated column patterns
-                if default_val.to_uppercase().contains("GENERATED") {
-                    ("", "s") // 's' = stored generated column
+            let (attidentity, attgenerated) =
+                if is_primary_key && sqlite_type.to_uppercase().contains("INTEGER") {
+                    // INTEGER PRIMARY KEY in SQLite behaves like PostgreSQL SERIAL
+                    ("d", "") // 'd' = GENERATED BY DEFAULT (like SERIAL)
+                } else if let Some(ref default_val) = default_expr {
+                    // Check for generated column patterns
+                    if default_val.to_uppercase().contains("GENERATED") {
+                        ("", "s") // 's' = stored generated column
+                    } else {
+                        ("", "")
+                    }
                 } else {
                     ("", "")
-                }
-            } else {
-                ("", "")
-            };
-            
+                };
+
             // Debug logging for test failures
             if col_name == "id" && table_name.contains("pgattr_test") {
-                debug!("pgattr_test_attrs.id: notnull={}, is_primary_key={}", notnull, is_primary_key);
+                debug!(
+                    "pgattr_test_attrs.id: notnull={}, is_primary_key={}",
+                    notnull, is_primary_key
+                );
             }
-            
+
             // Determine PostgreSQL type
-            let (pg_type_oid, attlen, atttypmod) = if let Some(pg_type_str) = type_map.get(col_name.as_ref()) {
+            let (pg_type_oid, attlen, atttypmod) = if let Some(pg_type_str) =
+                type_map.get(col_name.as_ref())
+            {
                 // Check if this is an ENUM type
                 let type_upper = pg_type_str.to_uppercase();
                 let base_type = if let Some(paren_pos) = type_upper.find('(') {
@@ -242,27 +286,30 @@ async fn add_table_attributes(
                 } else {
                     type_upper.trim()
                 };
-                
+
                 // First try to parse as a known type
                 let (oid, attlen, atttypmod) = parse_pg_type(pg_type_str);
-                
+
                 // If it's TEXT (default for unknown types), check if it's an ENUM
-                if oid == PgType::Text.to_oid() && !matches!(base_type, "TEXT" | "VARCHAR" | "CHAR") {
+                if oid == PgType::Text.to_oid() && !matches!(base_type, "TEXT" | "VARCHAR" | "CHAR")
+                {
                     // Query the ENUM metadata to see if this is an ENUM type
                     // Try the lowercase version of the type name since ENUM types are stored in lowercase
                     let enum_query = format!(
                         "SELECT type_oid FROM __pgsqlite_enum_types WHERE type_name = '{}'",
                         pg_type_str.to_lowercase()
                     );
-                    
+
                     // Check if the enum types table exists first
                     let check_table = db.query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='__pgsqlite_enum_types' LIMIT 1").await;
-                    
+
                     if check_table.is_ok() && !check_table.unwrap().rows.is_empty() {
                         if let Ok(enum_result) = db.query(&enum_query).await {
                             if let Some(row) = enum_result.rows.first() {
                                 if let Some(Some(oid_bytes)) = row.first() {
-                                    if let Ok(enum_oid) = String::from_utf8_lossy(oid_bytes).parse::<i32>() {
+                                    if let Ok(enum_oid) =
+                                        String::from_utf8_lossy(oid_bytes).parse::<i32>()
+                                    {
                                         // This is an ENUM type
                                         (enum_oid, -1, -1)
                                     } else {
@@ -287,7 +334,7 @@ async fn add_table_attributes(
             } else {
                 map_sqlite_to_pg_type(&sqlite_type)
             };
-            
+
             // Build row data for WHERE evaluation
             let mut row_data = HashMap::new();
             row_data.insert("attrelid".to_string(), table_oid.to_string());
@@ -302,8 +349,14 @@ async fn add_table_attributes(
             row_data.insert("attbyval".to_string(), "f".to_string());
             row_data.insert("attstorage".to_string(), "p".to_string());
             row_data.insert("attalign".to_string(), "i".to_string());
-            row_data.insert("attnotnull".to_string(), if notnull { "t" } else { "f" }.to_string());
-            row_data.insert("atthasdef".to_string(), if has_default { "t" } else { "f" }.to_string());
+            row_data.insert(
+                "attnotnull".to_string(),
+                if notnull { "t" } else { "f" }.to_string(),
+            );
+            row_data.insert(
+                "atthasdef".to_string(),
+                if has_default { "t" } else { "f" }.to_string(),
+            );
             row_data.insert("atthasmissing".to_string(), "f".to_string());
             row_data.insert("attidentity".to_string(), attidentity.to_string());
             row_data.insert("attgenerated".to_string(), attgenerated.to_string());
@@ -313,8 +366,11 @@ async fn add_table_attributes(
             row_data.insert("attcollation".to_string(), "0".to_string());
 
             // Add the default expression if available (non-standard pg_attribute extension)
-            row_data.insert("adsrc".to_string(), default_expr.unwrap_or_else(|| "".to_string()));
-            
+            row_data.insert(
+                "adsrc".to_string(),
+                default_expr.unwrap_or_else(|| "".to_string()),
+            );
+
             // Evaluate WHERE clause if present, but skip if we already filtered by table
             // Since we extracted the table filter, we don't need to evaluate the complex WHERE clause again
             let include_row = if let Some(selection) = &select.selection {
@@ -332,48 +388,56 @@ async fn add_table_attributes(
             } else {
                 true
             };
-            
+
             if include_row {
                 // Build the complete row first
                 let full_row = vec![
-                    Some(table_oid.to_string().into_bytes()),              // 0: attrelid
-                    Some(col_name.to_string().into_bytes()),               // 1: attname
-                    Some(pg_type_oid.to_string().into_bytes()),            // 2: atttypid
-                    Some("-1".to_string().into_bytes()),                   // 3: attstattarget
-                    Some(attlen.to_string().into_bytes()),                 // 4: attlen
-                    Some(((idx + 1) as i16).to_string().into_bytes()),    // 5: attnum (1-based)
-                    Some("0".to_string().into_bytes()),                    // 6: attndims
-                    Some("-1".to_string().into_bytes()),                   // 7: attcacheoff
-                    Some(atttypmod.to_string().into_bytes()),              // 8: atttypmod
-                    Some(b"f".to_vec()),                                // 9: attbyval
-                    Some(b"p".to_vec()),                                // 10: attstorage (plain)
-                    Some(b"i".to_vec()),                                // 11: attalign
-                    Some(if notnull { b"t".to_vec() } else { b"f".to_vec() }),   // 12: attnotnull
-                    Some(if has_default { b"t".to_vec() } else { b"f".to_vec() }), // 13: atthasdef
-                    Some(b"f".to_vec()),                                // 14: atthasmissing
-                    Some(attidentity.to_string().into_bytes()),         // 15: attidentity
-                    Some(attgenerated.to_string().into_bytes()),        // 16: attgenerated
-                    Some(b"f".to_vec()),                                // 17: attisdropped
-                    Some(b"t".to_vec()),                                // 18: attislocal
-                    Some("0".to_string().into_bytes()),                    // 19: attinhcount
-                    Some("0".to_string().into_bytes()),                    // 20: attcollation
-                    None,                                                  // 21: attacl
-                    None,                                                  // 22: attoptions
-                    None,                                                  // 23: attfdwoptions
-                    None,                                                  // 24: attmissingval
+                    Some(table_oid.to_string().into_bytes()),   // 0: attrelid
+                    Some(col_name.to_string().into_bytes()),    // 1: attname
+                    Some(pg_type_oid.to_string().into_bytes()), // 2: atttypid
+                    Some("-1".to_string().into_bytes()),        // 3: attstattarget
+                    Some(attlen.to_string().into_bytes()),      // 4: attlen
+                    Some(((idx + 1) as i16).to_string().into_bytes()), // 5: attnum (1-based)
+                    Some("0".to_string().into_bytes()),         // 6: attndims
+                    Some("-1".to_string().into_bytes()),        // 7: attcacheoff
+                    Some(atttypmod.to_string().into_bytes()),   // 8: atttypmod
+                    Some(b"f".to_vec()),                        // 9: attbyval
+                    Some(b"p".to_vec()),                        // 10: attstorage (plain)
+                    Some(b"i".to_vec()),                        // 11: attalign
+                    Some(if notnull {
+                        b"t".to_vec()
+                    } else {
+                        b"f".to_vec()
+                    }), // 12: attnotnull
+                    Some(if has_default {
+                        b"t".to_vec()
+                    } else {
+                        b"f".to_vec()
+                    }), // 13: atthasdef
+                    Some(b"f".to_vec()),                        // 14: atthasmissing
+                    Some(attidentity.to_string().into_bytes()), // 15: attidentity
+                    Some(attgenerated.to_string().into_bytes()), // 16: attgenerated
+                    Some(b"f".to_vec()),                        // 17: attisdropped
+                    Some(b"t".to_vec()),                        // 18: attislocal
+                    Some("0".to_string().into_bytes()),         // 19: attinhcount
+                    Some("0".to_string().into_bytes()),         // 20: attcollation
+                    None,                                       // 21: attacl
+                    None,                                       // 22: attoptions
+                    None,                                       // 23: attfdwoptions
+                    None,                                       // 24: attmissingval
                 ];
-                
+
                 // Project only the selected columns
                 let mut projected_row = Vec::new();
                 for &idx in selected_indices {
                     projected_row.push(full_row.get(idx).cloned().flatten());
                 }
-                
+
                 rows.push(projected_row);
             }
         }
     }
-    
+
     Ok(())
 }
 
@@ -394,40 +458,54 @@ fn extract_table_from_expr(expr: &Expr) -> Option<String> {
             if matches!(op, sqlparser::ast::BinaryOperator::Eq) {
                 let is_attrelid = match left.as_ref() {
                     Expr::Identifier(ident) => ident.value.to_lowercase() == "attrelid",
-                    Expr::CompoundIdentifier(parts) => {
-                        parts.last().map(|p| p.value.to_lowercase() == "attrelid").unwrap_or(false)
-                    }
+                    Expr::CompoundIdentifier(parts) => parts
+                        .last()
+                        .map(|p| p.value.to_lowercase() == "attrelid")
+                        .unwrap_or(false),
                     _ => false,
                 };
 
                 // Also check for relname = 'table' patterns
                 let is_relname = match left.as_ref() {
                     Expr::Identifier(ident) => ident.value.to_lowercase() == "relname",
-                    Expr::CompoundIdentifier(parts) => {
-                        parts.last().map(|p| p.value.to_lowercase() == "relname").unwrap_or(false)
-                    }
+                    Expr::CompoundIdentifier(parts) => parts
+                        .last()
+                        .map(|p| p.value.to_lowercase() == "relname")
+                        .unwrap_or(false),
                     _ => false,
                 };
 
                 if is_attrelid {
-                    debug!("extract_table_from_expr: found attrelid =, checking right side: {}", right);
+                    debug!(
+                        "extract_table_from_expr: found attrelid =, checking right side: {}",
+                        right
+                    );
 
                     // Extract table name from right side
                     if let Expr::Cast { expr, .. } = right.as_ref()
                         && let Expr::Value(sqlparser::ast::ValueWithSpan {
-                            value: SqlValue::SingleQuotedString(s), ..
-                        }) = expr.as_ref() {
-                            // Remove schema prefix if present
-                            let table_name = s.split('.').next_back().unwrap_or(s);
-                            debug!("extract_table_from_expr: found regclass cast table: {}", table_name);
-                            return Some(table_name.to_string());
-                        }
+                            value: SqlValue::SingleQuotedString(s),
+                            ..
+                        }) = expr.as_ref()
+                    {
+                        // Remove schema prefix if present
+                        let table_name = s.split('.').next_back().unwrap_or(s);
+                        debug!(
+                            "extract_table_from_expr: found regclass cast table: {}",
+                            table_name
+                        );
+                        return Some(table_name.to_string());
+                    }
 
                     // Handle subquery pattern: (SELECT oid FROM pg_class WHERE relname = 'table')
                     if let Expr::Nested(subquery_expr) = right.as_ref() {
-                        debug!("extract_table_from_expr: found nested subquery: {}", subquery_expr);
+                        debug!(
+                            "extract_table_from_expr: found nested subquery: {}",
+                            subquery_expr
+                        );
                         if let Expr::Subquery(subquery) = subquery_expr.as_ref()
-                            && let Some(select) = subquery.body.as_select() {
+                            && let Some(select) = subquery.body.as_select()
+                        {
                             debug!("extract_table_from_expr: processing subquery SELECT");
                             if let Some(subquery_where) = &select.selection {
                                 return extract_table_from_expr(subquery_where);
@@ -448,14 +526,20 @@ fn extract_table_from_expr(expr: &Expr) -> Option<String> {
 
                     // Handle string matching as fallback
                     let where_str = format!("{}", expr);
-                    debug!("extract_table_from_expr: fallback string matching on: {}", where_str);
+                    debug!(
+                        "extract_table_from_expr: fallback string matching on: {}",
+                        where_str
+                    );
                     if where_str.contains("relname") {
                         // Look for pattern like: relname = 'table_name'
                         if let Some(start) = where_str.find("relname = '") {
                             let start_pos = start + "relname = '".len();
                             if let Some(end_pos) = where_str[start_pos..].find('\'') {
                                 let table_name = &where_str[start_pos..start_pos + end_pos];
-                                debug!("extract_table_from_expr: found table via string matching: {}", table_name);
+                                debug!(
+                                    "extract_table_from_expr: found table via string matching: {}",
+                                    table_name
+                                );
                                 return Some(table_name.to_string());
                             }
                         }
@@ -463,11 +547,16 @@ fn extract_table_from_expr(expr: &Expr) -> Option<String> {
                 }
 
                 if is_relname {
-                    debug!("extract_table_from_expr: found relname =, checking right side: {}", right);
+                    debug!(
+                        "extract_table_from_expr: found relname =, checking right side: {}",
+                        right
+                    );
                     // Extract table name from right side for relname = 'table' patterns
                     if let Expr::Value(sqlparser::ast::ValueWithSpan {
-                        value: SqlValue::SingleQuotedString(s), ..
-                    }) = right.as_ref() {
+                        value: SqlValue::SingleQuotedString(s),
+                        ..
+                    }) = right.as_ref()
+                    {
                         debug!("extract_table_from_expr: found table name: {}", s);
                         return Some(s.clone());
                     }
@@ -475,7 +564,10 @@ fn extract_table_from_expr(expr: &Expr) -> Option<String> {
             }
 
             // Check AND/OR clauses
-            if matches!(op, sqlparser::ast::BinaryOperator::And | sqlparser::ast::BinaryOperator::Or) {
+            if matches!(
+                op,
+                sqlparser::ast::BinaryOperator::And | sqlparser::ast::BinaryOperator::Or
+            ) {
                 if let Some(table) = extract_table_from_expr(left) {
                     return Some(table);
                 }
@@ -488,7 +580,10 @@ fn extract_table_from_expr(expr: &Expr) -> Option<String> {
             debug!("extract_table_from_expr: found relname identifier (should be in = clause)");
         }
         _ => {
-            debug!("extract_table_from_expr: no match for expression type: {:?}", expr);
+            debug!(
+                "extract_table_from_expr: no match for expression type: {:?}",
+                expr
+            );
         }
     }
     None
@@ -497,17 +592,17 @@ fn extract_table_from_expr(expr: &Expr) -> Option<String> {
 fn parse_pg_type(pg_type_str: &str) -> (i32, i16, i32) {
     // Parse PostgreSQL type string and return (oid, attlen, atttypmod)
     let type_upper = pg_type_str.to_uppercase();
-    
+
     // Extract base type and modifiers
     let (base_type, type_mod) = if let Some(paren_pos) = type_upper.find('(') {
         let base = &type_upper[..paren_pos].trim();
-        let mod_str = &type_upper[paren_pos+1..type_upper.len()-1];
+        let mod_str = &type_upper[paren_pos + 1..type_upper.len() - 1];
         let mods: Vec<&str> = mod_str.split(',').map(|s| s.trim()).collect();
         (base.to_string(), Some(mods))
     } else {
         (type_upper.trim().to_string(), None)
     };
-    
+
     // Map base type to OID and attlen
     let (oid, attlen) = match base_type.as_str() {
         "BOOL" | "BOOLEAN" => (PgType::Bool.to_oid(), 1),
@@ -535,7 +630,7 @@ fn parse_pg_type(pg_type_str: &str) -> (i32, i16, i32) {
             (PgType::Text.to_oid(), -1)
         }
     };
-    
+
     // Calculate atttypmod
     let atttypmod = match base_type.as_str() {
         "VARCHAR" | "CHAR" => {
@@ -552,7 +647,9 @@ fn parse_pg_type(pg_type_str: &str) -> (i32, i16, i32) {
         "NUMERIC" | "DECIMAL" => {
             if let Some(mods) = type_mod {
                 if mods.len() >= 2 {
-                    if let (Ok(precision), Ok(scale)) = (mods[0].parse::<i32>(), mods[1].parse::<i32>()) {
+                    if let (Ok(precision), Ok(scale)) =
+                        (mods[0].parse::<i32>(), mods[1].parse::<i32>())
+                    {
                         ((precision << 16) | scale) + 4
                     } else {
                         -1
@@ -568,13 +665,13 @@ fn parse_pg_type(pg_type_str: &str) -> (i32, i16, i32) {
         }
         _ => -1,
     };
-    
+
     (oid, attlen, atttypmod)
 }
 
 fn map_sqlite_to_pg_type(sqlite_type: &str) -> (i32, i16, i32) {
     let type_upper = sqlite_type.to_uppercase();
-    
+
     // SQLite is very flexible with types, try to match common patterns
     let (oid, attlen) = if type_upper.contains("INT") {
         if type_upper.contains("BIGINT") || type_upper.contains("INT8") {
@@ -584,7 +681,10 @@ fn map_sqlite_to_pg_type(sqlite_type: &str) -> (i32, i16, i32) {
         } else {
             (PgType::Int4.to_oid(), 4)
         }
-    } else if type_upper.contains("REAL") || type_upper.contains("FLOAT") || type_upper.contains("DOUBLE") {
+    } else if type_upper.contains("REAL")
+        || type_upper.contains("FLOAT")
+        || type_upper.contains("DOUBLE")
+    {
         if type_upper.contains("DOUBLE") {
             (PgType::Float8.to_oid(), 8)
         } else {
@@ -614,6 +714,6 @@ fn map_sqlite_to_pg_type(sqlite_type: &str) -> (i32, i16, i32) {
         // Default to TEXT for SQLite's flexible typing
         (PgType::Text.to_oid(), -1)
     };
-    
+
     (oid, attlen, -1) // atttypmod = -1 for no modifier
 }

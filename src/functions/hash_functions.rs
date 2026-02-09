@@ -1,4 +1,4 @@
-use rusqlite::{functions::FunctionFlags, Connection, Result};
+use rusqlite::{Connection, Result, functions::FunctionFlags};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use tracing::debug;

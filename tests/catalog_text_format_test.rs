@@ -4,19 +4,24 @@ use common::setup_test_server_with_init;
 #[tokio::test]
 async fn test_catalog_text_format() {
     let _ = env_logger::builder().is_test(true).try_init();
-    
+
     let server = setup_test_server_with_init(|db| {
         Box::pin(async move {
-            db.execute("CREATE TABLE test_table (id INTEGER PRIMARY KEY)").await?;
+            db.execute("CREATE TABLE test_table (id INTEGER PRIMARY KEY)")
+                .await?;
             Ok(())
         })
-    }).await;
+    })
+    .await;
 
     let client = &server.client;
 
     // Test 1: Force text format by creating a prepared statement
     eprintln!("\n=== Test 1: Prepared statement with text format ===");
-    let stmt = match client.prepare("SELECT relname FROM pg_catalog.pg_class WHERE relkind = 'r'").await {
+    let stmt = match client
+        .prepare("SELECT relname FROM pg_catalog.pg_class WHERE relkind = 'r'")
+        .await
+    {
         Ok(s) => {
             eprintln!("✓ Prepare succeeded, columns: {:?}", s.columns());
             s

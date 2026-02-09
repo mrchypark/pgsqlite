@@ -1,16 +1,18 @@
 mod common;
 use common::setup_test_server_with_init;
 
-#[tokio::test] 
+#[tokio::test]
 async fn catalog_simple_repro() {
     let _ = env_logger::builder().is_test(true).try_init();
     eprintln!("Starting test...");
     let server = setup_test_server_with_init(|db| {
         Box::pin(async move {
-            db.execute("CREATE TABLE test_table1 (id INTEGER PRIMARY KEY, name TEXT)").await?;
+            db.execute("CREATE TABLE test_table1 (id INTEGER PRIMARY KEY, name TEXT)")
+                .await?;
             Ok(())
         })
-    }).await;
+    })
+    .await;
 
     let client = &server.client;
 
@@ -21,12 +23,15 @@ async fn catalog_simple_repro() {
                     relhasrules, relhastriggers, relhassubclass, relrowsecurity, \
                     relforcerowsecurity, relispopulated, relreplident, relispartition, \
                     relrewrite, relfrozenxid, relminmxid, relacl, reloptions, relpartbound";
-    
+
     eprintln!("Testing explicit columns query...");
-    match client.query(
-        &format!("SELECT {all_cols} FROM pg_catalog.pg_class WHERE relkind = 'r'"),
-        &[]
-    ).await {
+    match client
+        .query(
+            &format!("SELECT {all_cols} FROM pg_catalog.pg_class WHERE relkind = 'r'"),
+            &[],
+        )
+        .await
+    {
         Ok(rows) => {
             eprintln!("✓ Explicit columns works! Got {} rows", rows.len());
         }
@@ -35,6 +40,6 @@ async fn catalog_simple_repro() {
             panic!("Test failed!");
         }
     }
-    
+
     server.abort();
 }

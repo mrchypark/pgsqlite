@@ -8,33 +8,33 @@ pub fn register_array_functions(conn: &Connection) -> Result<()> {
     register_array_upper(conn)?;
     register_array_lower(conn)?;
     register_array_ndims(conn)?;
-    
+
     // Array manipulation functions
     register_array_append(conn)?;
     register_array_prepend(conn)?;
     register_array_cat(conn)?;
     register_array_remove(conn)?;
     register_array_replace(conn)?;
-    
+
     // Array operator functions
     register_array_contains(conn)?;
     register_array_contained(conn)?;
     register_array_overlap(conn)?;
-    
+
     // Array utility functions
     register_array_slice(conn)?;
     register_array_position(conn)?;
     register_array_positions(conn)?;
-    
+
     // Array aggregate function
     register_array_agg(conn)?;
-    
+
     // Note: unnest() is now implemented as a virtual table in unnest_vtab.rs
-    
+
     // Array constructor functions
     register_string_to_array(conn)?;
     register_array_to_string(conn)?;
-    
+
     Ok(())
 }
 
@@ -47,7 +47,7 @@ fn register_array_length(conn: &Connection) -> Result<()> {
         |ctx| {
             let array_json: String = ctx.get(0)?;
             let dimension: i32 = ctx.get(1)?;
-            
+
             match serde_json::from_str::<JsonValue>(&array_json) {
                 Ok(JsonValue::Array(arr)) => {
                     if dimension == 1 {
@@ -69,7 +69,7 @@ fn register_array_length(conn: &Connection) -> Result<()> {
             }
         },
     )?;
-    
+
     Ok(())
 }
 
@@ -82,7 +82,7 @@ fn register_array_upper(conn: &Connection) -> Result<()> {
         |ctx| {
             let array_json: String = ctx.get(0)?;
             let dimension: i32 = ctx.get(1)?;
-            
+
             match serde_json::from_str::<JsonValue>(&array_json) {
                 Ok(JsonValue::Array(arr)) => {
                     if dimension == 1 {
@@ -102,7 +102,7 @@ fn register_array_upper(conn: &Connection) -> Result<()> {
             }
         },
     )?;
-    
+
     Ok(())
 }
 
@@ -115,7 +115,7 @@ fn register_array_lower(conn: &Connection) -> Result<()> {
         |ctx| {
             let array_json: String = ctx.get(0)?;
             let dimension: i32 = ctx.get(1)?;
-            
+
             match serde_json::from_str::<JsonValue>(&array_json) {
                 Ok(JsonValue::Array(arr)) => {
                     if arr.is_empty() {
@@ -137,7 +137,7 @@ fn register_array_lower(conn: &Connection) -> Result<()> {
             }
         },
     )?;
-    
+
     Ok(())
 }
 
@@ -149,14 +149,14 @@ fn register_array_ndims(conn: &Connection) -> Result<()> {
         FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
         |ctx| {
             let array_json: String = ctx.get(0)?;
-            
+
             match serde_json::from_str::<JsonValue>(&array_json) {
                 Ok(json) => Ok(Some(count_dimensions(&json))),
                 _ => Ok(None),
             }
         },
     )?;
-    
+
     Ok(())
 }
 
@@ -168,7 +168,7 @@ fn register_array_append(conn: &Connection) -> Result<()> {
         FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
         |ctx| {
             let array_json: String = ctx.get(0)?;
-            
+
             // Handle element parameter of different types
             let elem_value = match ctx.get_raw(1) {
                 rusqlite::types::ValueRef::Text(s) => {
@@ -176,16 +176,18 @@ fn register_array_append(conn: &Connection) -> Result<()> {
                     serde_json::from_str::<JsonValue>(text)
                         .unwrap_or_else(|_| JsonValue::String(text.to_string()))
                 }
-                rusqlite::types::ValueRef::Integer(i) => JsonValue::Number(serde_json::Number::from(i)),
-                rusqlite::types::ValueRef::Real(f) => {
-                    JsonValue::Number(serde_json::Number::from_f64(f).unwrap_or_else(|| serde_json::Number::from(0)))
+                rusqlite::types::ValueRef::Integer(i) => {
+                    JsonValue::Number(serde_json::Number::from(i))
                 }
+                rusqlite::types::ValueRef::Real(f) => JsonValue::Number(
+                    serde_json::Number::from_f64(f).unwrap_or_else(|| serde_json::Number::from(0)),
+                ),
                 rusqlite::types::ValueRef::Null => JsonValue::Null,
                 rusqlite::types::ValueRef::Blob(b) => {
                     JsonValue::String(format!("\\x{}", hex::encode(b)))
                 }
             };
-            
+
             match serde_json::from_str::<JsonValue>(&array_json) {
                 Ok(JsonValue::Array(mut arr)) => {
                     arr.push(elem_value);
@@ -195,7 +197,7 @@ fn register_array_append(conn: &Connection) -> Result<()> {
             }
         },
     )?;
-    
+
     Ok(())
 }
 
@@ -213,18 +215,20 @@ fn register_array_prepend(conn: &Connection) -> Result<()> {
                     serde_json::from_str::<JsonValue>(text)
                         .unwrap_or_else(|_| JsonValue::String(text.to_string()))
                 }
-                rusqlite::types::ValueRef::Integer(i) => JsonValue::Number(serde_json::Number::from(i)),
-                rusqlite::types::ValueRef::Real(f) => {
-                    JsonValue::Number(serde_json::Number::from_f64(f).unwrap_or_else(|| serde_json::Number::from(0)))
+                rusqlite::types::ValueRef::Integer(i) => {
+                    JsonValue::Number(serde_json::Number::from(i))
                 }
+                rusqlite::types::ValueRef::Real(f) => JsonValue::Number(
+                    serde_json::Number::from_f64(f).unwrap_or_else(|| serde_json::Number::from(0)),
+                ),
                 rusqlite::types::ValueRef::Null => JsonValue::Null,
                 rusqlite::types::ValueRef::Blob(b) => {
                     JsonValue::String(format!("\\x{}", hex::encode(b)))
                 }
             };
-            
+
             let array_json: String = ctx.get(1)?;
-            
+
             match serde_json::from_str::<JsonValue>(&array_json) {
                 Ok(JsonValue::Array(mut arr)) => {
                     arr.insert(0, elem_value);
@@ -234,7 +238,7 @@ fn register_array_prepend(conn: &Connection) -> Result<()> {
             }
         },
     )?;
-    
+
     Ok(())
 }
 
@@ -247,7 +251,7 @@ fn register_array_cat(conn: &Connection) -> Result<()> {
         |ctx| {
             let array1_json: String = ctx.get(0)?;
             let array2_json: String = ctx.get(1)?;
-            
+
             match (
                 serde_json::from_str::<JsonValue>(&array1_json),
                 serde_json::from_str::<JsonValue>(&array2_json),
@@ -260,7 +264,7 @@ fn register_array_cat(conn: &Connection) -> Result<()> {
             }
         },
     )?;
-    
+
     Ok(())
 }
 
@@ -272,7 +276,7 @@ fn register_array_remove(conn: &Connection) -> Result<()> {
         FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
         |ctx| {
             let array_json: String = ctx.get(0)?;
-            
+
             // Handle element parameter of different types
             let elem_value = match ctx.get_raw(1) {
                 rusqlite::types::ValueRef::Text(s) => {
@@ -280,29 +284,30 @@ fn register_array_remove(conn: &Connection) -> Result<()> {
                     serde_json::from_str::<JsonValue>(text)
                         .unwrap_or_else(|_| JsonValue::String(text.to_string()))
                 }
-                rusqlite::types::ValueRef::Integer(i) => JsonValue::Number(serde_json::Number::from(i)),
-                rusqlite::types::ValueRef::Real(f) => {
-                    JsonValue::Number(serde_json::Number::from_f64(f).unwrap_or_else(|| serde_json::Number::from(0)))
+                rusqlite::types::ValueRef::Integer(i) => {
+                    JsonValue::Number(serde_json::Number::from(i))
                 }
+                rusqlite::types::ValueRef::Real(f) => JsonValue::Number(
+                    serde_json::Number::from_f64(f).unwrap_or_else(|| serde_json::Number::from(0)),
+                ),
                 rusqlite::types::ValueRef::Null => JsonValue::Null,
                 rusqlite::types::ValueRef::Blob(b) => {
                     JsonValue::String(format!("\\x{}", hex::encode(b)))
                 }
             };
-            
+
             match serde_json::from_str::<JsonValue>(&array_json) {
                 Ok(JsonValue::Array(arr)) => {
-                    let filtered: Vec<JsonValue> = arr.into_iter()
-                        .filter(|v| v != &elem_value)
-                        .collect();
-                    
+                    let filtered: Vec<JsonValue> =
+                        arr.into_iter().filter(|v| v != &elem_value).collect();
+
                     Ok(serde_json::to_string(&filtered).ok())
                 }
                 _ => Ok(None),
             }
         },
     )?;
-    
+
     Ok(())
 }
 
@@ -314,7 +319,7 @@ fn register_array_replace(conn: &Connection) -> Result<()> {
         FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
         |ctx| {
             let array_json: String = ctx.get(0)?;
-            
+
             // Handle old_element parameter of different types
             let old_value = match ctx.get_raw(1) {
                 rusqlite::types::ValueRef::Text(s) => {
@@ -322,16 +327,18 @@ fn register_array_replace(conn: &Connection) -> Result<()> {
                     serde_json::from_str::<JsonValue>(text)
                         .unwrap_or_else(|_| JsonValue::String(text.to_string()))
                 }
-                rusqlite::types::ValueRef::Integer(i) => JsonValue::Number(serde_json::Number::from(i)),
-                rusqlite::types::ValueRef::Real(f) => {
-                    JsonValue::Number(serde_json::Number::from_f64(f).unwrap_or_else(|| serde_json::Number::from(0)))
+                rusqlite::types::ValueRef::Integer(i) => {
+                    JsonValue::Number(serde_json::Number::from(i))
                 }
+                rusqlite::types::ValueRef::Real(f) => JsonValue::Number(
+                    serde_json::Number::from_f64(f).unwrap_or_else(|| serde_json::Number::from(0)),
+                ),
                 rusqlite::types::ValueRef::Null => JsonValue::Null,
                 rusqlite::types::ValueRef::Blob(b) => {
                     JsonValue::String(format!("\\x{}", hex::encode(b)))
                 }
             };
-            
+
             // Handle new_element parameter of different types
             let new_value = match ctx.get_raw(2) {
                 rusqlite::types::ValueRef::Text(s) => {
@@ -339,29 +346,32 @@ fn register_array_replace(conn: &Connection) -> Result<()> {
                     serde_json::from_str::<JsonValue>(text)
                         .unwrap_or_else(|_| JsonValue::String(text.to_string()))
                 }
-                rusqlite::types::ValueRef::Integer(i) => JsonValue::Number(serde_json::Number::from(i)),
-                rusqlite::types::ValueRef::Real(f) => {
-                    JsonValue::Number(serde_json::Number::from_f64(f).unwrap_or_else(|| serde_json::Number::from(0)))
+                rusqlite::types::ValueRef::Integer(i) => {
+                    JsonValue::Number(serde_json::Number::from(i))
                 }
+                rusqlite::types::ValueRef::Real(f) => JsonValue::Number(
+                    serde_json::Number::from_f64(f).unwrap_or_else(|| serde_json::Number::from(0)),
+                ),
                 rusqlite::types::ValueRef::Null => JsonValue::Null,
                 rusqlite::types::ValueRef::Blob(b) => {
                     JsonValue::String(format!("\\x{}", hex::encode(b)))
                 }
             };
-            
+
             match serde_json::from_str::<JsonValue>(&array_json) {
                 Ok(JsonValue::Array(arr)) => {
-                    let replaced: Vec<JsonValue> = arr.into_iter()
+                    let replaced: Vec<JsonValue> = arr
+                        .into_iter()
                         .map(|v| if v == old_value { new_value.clone() } else { v })
                         .collect();
-                    
+
                     Ok(serde_json::to_string(&replaced).ok())
                 }
                 _ => Ok(None),
             }
         },
     )?;
-    
+
     Ok(())
 }
 
@@ -374,7 +384,7 @@ fn register_array_contains(conn: &Connection) -> Result<()> {
         |ctx| {
             let array1_json: String = ctx.get(0)?;
             let array2_json: String = ctx.get(1)?;
-            
+
             match (
                 serde_json::from_str::<JsonValue>(&array1_json),
                 serde_json::from_str::<JsonValue>(&array2_json),
@@ -388,7 +398,7 @@ fn register_array_contains(conn: &Connection) -> Result<()> {
             }
         },
     )?;
-    
+
     Ok(())
 }
 
@@ -401,7 +411,7 @@ fn register_array_contained(conn: &Connection) -> Result<()> {
         |ctx| {
             let array1_json: String = ctx.get(0)?;
             let array2_json: String = ctx.get(1)?;
-            
+
             match (
                 serde_json::from_str::<JsonValue>(&array1_json),
                 serde_json::from_str::<JsonValue>(&array2_json),
@@ -415,7 +425,7 @@ fn register_array_contained(conn: &Connection) -> Result<()> {
             }
         },
     )?;
-    
+
     Ok(())
 }
 
@@ -428,7 +438,7 @@ fn register_array_overlap(conn: &Connection) -> Result<()> {
         |ctx| {
             let array1_json: String = ctx.get(0)?;
             let array2_json: String = ctx.get(1)?;
-            
+
             match (
                 serde_json::from_str::<JsonValue>(&array1_json),
                 serde_json::from_str::<JsonValue>(&array2_json),
@@ -442,7 +452,7 @@ fn register_array_overlap(conn: &Connection) -> Result<()> {
             }
         },
     )?;
-    
+
     Ok(())
 }
 
@@ -456,13 +466,13 @@ fn register_array_slice(conn: &Connection) -> Result<()> {
             let array_json: String = ctx.get(0)?;
             let start: i32 = ctx.get(1)?;
             let end: i32 = ctx.get(2)?;
-            
+
             match serde_json::from_str::<JsonValue>(&array_json) {
                 Ok(JsonValue::Array(arr)) => {
                     // Convert 1-based PostgreSQL indices to 0-based
                     let start_idx = (start - 1).max(0) as usize;
                     let end_idx = end.min(arr.len() as i32) as usize;
-                    
+
                     if start_idx < arr.len() && start_idx < end_idx {
                         let slice: Vec<JsonValue> = arr[start_idx..end_idx].to_vec();
                         Ok(serde_json::to_string(&slice).ok())
@@ -474,7 +484,7 @@ fn register_array_slice(conn: &Connection) -> Result<()> {
             }
         },
     )?;
-    
+
     Ok(())
 }
 
@@ -486,7 +496,7 @@ fn register_array_position(conn: &Connection) -> Result<()> {
         FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
         |ctx| {
             let array_json: String = ctx.get(0)?;
-            
+
             // Handle element parameter of different types
             let elem_value = match ctx.get_raw(1) {
                 rusqlite::types::ValueRef::Text(s) => {
@@ -494,16 +504,18 @@ fn register_array_position(conn: &Connection) -> Result<()> {
                     serde_json::from_str::<JsonValue>(text)
                         .unwrap_or_else(|_| JsonValue::String(text.to_string()))
                 }
-                rusqlite::types::ValueRef::Integer(i) => JsonValue::Number(serde_json::Number::from(i)),
-                rusqlite::types::ValueRef::Real(f) => {
-                    JsonValue::Number(serde_json::Number::from_f64(f).unwrap_or_else(|| serde_json::Number::from(0)))
+                rusqlite::types::ValueRef::Integer(i) => {
+                    JsonValue::Number(serde_json::Number::from(i))
                 }
+                rusqlite::types::ValueRef::Real(f) => JsonValue::Number(
+                    serde_json::Number::from_f64(f).unwrap_or_else(|| serde_json::Number::from(0)),
+                ),
                 rusqlite::types::ValueRef::Null => JsonValue::Null,
                 rusqlite::types::ValueRef::Blob(b) => {
                     JsonValue::String(format!("\\x{}", hex::encode(b)))
                 }
             };
-            
+
             match serde_json::from_str::<JsonValue>(&array_json) {
                 Ok(JsonValue::Array(arr)) => {
                     // Find first occurrence (1-based index)
@@ -518,7 +530,7 @@ fn register_array_position(conn: &Connection) -> Result<()> {
             }
         },
     )?;
-    
+
     Ok(())
 }
 
@@ -530,7 +542,7 @@ fn register_array_positions(conn: &Connection) -> Result<()> {
         FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
         |ctx| {
             let array_json: String = ctx.get(0)?;
-            
+
             // Handle element parameter of different types
             let elem_value = match ctx.get_raw(1) {
                 rusqlite::types::ValueRef::Text(s) => {
@@ -538,20 +550,23 @@ fn register_array_positions(conn: &Connection) -> Result<()> {
                     serde_json::from_str::<JsonValue>(text)
                         .unwrap_or_else(|_| JsonValue::String(text.to_string()))
                 }
-                rusqlite::types::ValueRef::Integer(i) => JsonValue::Number(serde_json::Number::from(i)),
-                rusqlite::types::ValueRef::Real(f) => {
-                    JsonValue::Number(serde_json::Number::from_f64(f).unwrap_or_else(|| serde_json::Number::from(0)))
+                rusqlite::types::ValueRef::Integer(i) => {
+                    JsonValue::Number(serde_json::Number::from(i))
                 }
+                rusqlite::types::ValueRef::Real(f) => JsonValue::Number(
+                    serde_json::Number::from_f64(f).unwrap_or_else(|| serde_json::Number::from(0)),
+                ),
                 rusqlite::types::ValueRef::Null => JsonValue::Null,
                 rusqlite::types::ValueRef::Blob(b) => {
                     JsonValue::String(format!("\\x{}", hex::encode(b)))
                 }
             };
-            
+
             match serde_json::from_str::<JsonValue>(&array_json) {
                 Ok(JsonValue::Array(arr)) => {
                     // Find all occurrences (1-based indices)
-                    let positions: Vec<i32> = arr.iter()
+                    let positions: Vec<i32> = arr
+                        .iter()
                         .enumerate()
                         .filter_map(|(i, val)| {
                             if val == &elem_value {
@@ -561,32 +576,36 @@ fn register_array_positions(conn: &Connection) -> Result<()> {
                             }
                         })
                         .collect();
-                    
+
                     Ok(serde_json::to_string(&positions).ok())
                 }
                 _ => Ok(Some("[]".to_string())),
             }
         },
     )?;
-    
+
     Ok(())
 }
 
 /// array_agg aggregate function
 fn register_array_agg(conn: &Connection) -> Result<()> {
     use rusqlite::functions::Aggregate;
-    
+
     #[derive(Default)]
     struct ArrayAgg;
-    
+
     impl Aggregate<Vec<JsonValue>, Option<String>> for ArrayAgg {
         fn init(&self, _: &mut rusqlite::functions::Context<'_>) -> Result<Vec<JsonValue>> {
             Ok(Vec::new())
         }
-        
-        fn step(&self, ctx: &mut rusqlite::functions::Context<'_>, agg: &mut Vec<JsonValue>) -> Result<()> {
+
+        fn step(
+            &self,
+            ctx: &mut rusqlite::functions::Context<'_>,
+            agg: &mut Vec<JsonValue>,
+        ) -> Result<()> {
             let value = ctx.get_raw(0);
-            
+
             let json_value = match value {
                 rusqlite::types::ValueRef::Null => JsonValue::Null,
                 rusqlite::types::ValueRef::Integer(i) => json!(i),
@@ -601,27 +620,27 @@ fn register_array_agg(conn: &Connection) -> Result<()> {
                     JsonValue::String(format!("\\x{}", hex::encode(b)))
                 }
             };
-            
+
             agg.push(json_value);
             Ok(())
         }
-        
-        fn finalize(&self, _: &mut rusqlite::functions::Context<'_>, agg: Option<Vec<JsonValue>>) -> Result<Option<String>> {
-            Ok(agg.map(|values| serde_json::to_string(&values).unwrap_or_else(|_| "[]".to_string())))
+
+        fn finalize(
+            &self,
+            _: &mut rusqlite::functions::Context<'_>,
+            agg: Option<Vec<JsonValue>>,
+        ) -> Result<Option<String>> {
+            Ok(agg
+                .map(|values| serde_json::to_string(&values).unwrap_or_else(|_| "[]".to_string())))
         }
     }
-    
+
     // Basic array_agg function (existing)
-    conn.create_aggregate_function(
-        "array_agg",
-        1,
-        FunctionFlags::SQLITE_UTF8,
-        ArrayAgg,
-    )?;
-    
+    conn.create_aggregate_function("array_agg", 1, FunctionFlags::SQLITE_UTF8, ArrayAgg)?;
+
     // Enhanced array_agg_distinct function for DISTINCT support
     register_array_agg_distinct(conn)?;
-    
+
     Ok(())
 }
 
@@ -629,18 +648,22 @@ fn register_array_agg(conn: &Connection) -> Result<()> {
 fn register_array_agg_distinct(conn: &Connection) -> Result<()> {
     use rusqlite::functions::Aggregate;
     use std::collections::HashSet;
-    
+
     #[derive(Default)]
     struct ArrayAggDistinct;
-    
+
     impl Aggregate<HashSet<String>, Option<String>> for ArrayAggDistinct {
         fn init(&self, _: &mut rusqlite::functions::Context<'_>) -> Result<HashSet<String>> {
             Ok(HashSet::new())
         }
-        
-        fn step(&self, ctx: &mut rusqlite::functions::Context<'_>, agg: &mut HashSet<String>) -> Result<()> {
+
+        fn step(
+            &self,
+            ctx: &mut rusqlite::functions::Context<'_>,
+            agg: &mut HashSet<String>,
+        ) -> Result<()> {
             let value = ctx.get_raw(0);
-            
+
             let json_value = match value {
                 rusqlite::types::ValueRef::Null => JsonValue::Null,
                 rusqlite::types::ValueRef::Integer(i) => json!(i),
@@ -654,7 +677,7 @@ fn register_array_agg_distinct(conn: &Connection) -> Result<()> {
                     JsonValue::String(format!("\\x{}", hex::encode(b)))
                 }
             };
-            
+
             // Use string representation for uniqueness check
             let key = match &json_value {
                 JsonValue::String(s) => s.clone(),
@@ -663,17 +686,22 @@ fn register_array_agg_distinct(conn: &Connection) -> Result<()> {
                 JsonValue::Null => "null".to_string(),
                 _ => serde_json::to_string(&json_value).unwrap_or_default(),
             };
-            
+
             agg.insert(key);
             Ok(())
         }
-        
-        fn finalize(&self, _: &mut rusqlite::functions::Context<'_>, agg: Option<HashSet<String>>) -> Result<Option<String>> {
+
+        fn finalize(
+            &self,
+            _: &mut rusqlite::functions::Context<'_>,
+            agg: Option<HashSet<String>>,
+        ) -> Result<Option<String>> {
             if let Some(values) = agg {
                 let mut sorted_values: Vec<String> = values.into_iter().collect();
                 sorted_values.sort();
-                
-                let json_values: Vec<JsonValue> = sorted_values.into_iter()
+
+                let json_values: Vec<JsonValue> = sorted_values
+                    .into_iter()
                     .map(|s| {
                         // Try to parse back to appropriate JSON type
                         if s == "null" {
@@ -691,24 +719,25 @@ fn register_array_agg_distinct(conn: &Connection) -> Result<()> {
                         }
                     })
                     .collect();
-                
-                Ok(Some(serde_json::to_string(&json_values).unwrap_or_else(|_| "[]".to_string())))
+
+                Ok(Some(
+                    serde_json::to_string(&json_values).unwrap_or_else(|_| "[]".to_string()),
+                ))
             } else {
                 Ok(Some("[]".to_string()))
             }
         }
     }
-    
+
     conn.create_aggregate_function(
         "array_agg_distinct",
         1,
         FunctionFlags::SQLITE_UTF8,
         ArrayAggDistinct,
     )?;
-    
+
     Ok(())
 }
-
 
 /// string_to_array(string, delimiter) - Split string into array
 fn register_string_to_array(conn: &Connection) -> Result<()> {
@@ -719,27 +748,29 @@ fn register_string_to_array(conn: &Connection) -> Result<()> {
         |ctx| {
             let input_string: String = ctx.get(0)?;
             let delimiter: String = ctx.get(1)?;
-            
+
             if input_string.is_empty() {
                 return Ok(Some("[]".to_string()));
             }
-            
+
             let parts: Vec<JsonValue> = if delimiter.is_empty() {
                 // Split into individual characters
-                input_string.chars()
+                input_string
+                    .chars()
                     .map(|c| JsonValue::String(c.to_string()))
                     .collect()
             } else {
                 // Split by delimiter
-                input_string.split(&delimiter)
+                input_string
+                    .split(&delimiter)
                     .map(|s| JsonValue::String(s.to_string()))
                     .collect()
             };
-            
+
             Ok(serde_json::to_string(&parts).ok())
         },
     )?;
-    
+
     Ok(())
 }
 
@@ -752,10 +783,11 @@ fn register_array_to_string(conn: &Connection) -> Result<()> {
         |ctx| {
             let array_json: String = ctx.get(0)?;
             let delimiter: String = ctx.get(1)?;
-            
+
             match serde_json::from_str::<JsonValue>(&array_json) {
                 Ok(JsonValue::Array(arr)) => {
-                    let elements: Vec<String> = arr.iter()
+                    let elements: Vec<String> = arr
+                        .iter()
                         .filter_map(|v| match v {
                             JsonValue::String(s) => Some(s.clone()),
                             JsonValue::Number(n) => Some(n.to_string()),
@@ -770,7 +802,7 @@ fn register_array_to_string(conn: &Connection) -> Result<()> {
             }
         },
     )?;
-    
+
     Ok(())
 }
 
@@ -782,7 +814,8 @@ fn count_dimensions(value: &JsonValue) -> i32 {
                 1
             } else {
                 // Check if any element is an array
-                let max_sub_dimensions = arr.iter()
+                let max_sub_dimensions = arr
+                    .iter()
                     .filter_map(|v| {
                         if matches!(v, JsonValue::Array(_)) {
                             Some(count_dimensions(v))
@@ -792,7 +825,7 @@ fn count_dimensions(value: &JsonValue) -> i32 {
                     })
                     .max()
                     .unwrap_or(0);
-                
+
                 if max_sub_dimensions > 0 {
                     1 + max_sub_dimensions
                 } else {
@@ -804,47 +837,43 @@ fn count_dimensions(value: &JsonValue) -> i32 {
     }
 }
 
-
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_array_functions() {
         let conn = Connection::open_in_memory().unwrap();
         register_array_functions(&conn).unwrap();
-        
+
         // Test array_length
-        let len: i32 = conn.query_row(
-            "SELECT array_length('[1,2,3,4,5]', 1)",
-            [],
-            |row| row.get(0)
-        ).unwrap();
+        let len: i32 = conn
+            .query_row("SELECT array_length('[1,2,3,4,5]', 1)", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
         assert_eq!(len, 5);
-        
+
         // Test array_append
-        let result: String = conn.query_row(
-            "SELECT array_append('[1,2,3]', '4')",
-            [],
-            |row| row.get(0)
-        ).unwrap();
+        let result: String = conn
+            .query_row("SELECT array_append('[1,2,3]', '4')", [], |row| row.get(0))
+            .unwrap();
         assert_eq!(result, "[1,2,3,4]");
-        
+
         // Test array_contains
-        let contains: bool = conn.query_row(
-            "SELECT array_contains('[1,2,3,4,5]', '[2,3]')",
-            [],
-            |row| row.get(0)
-        ).unwrap();
+        let contains: bool = conn
+            .query_row("SELECT array_contains('[1,2,3,4,5]', '[2,3]')", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
         assert!(contains);
-        
+
         // Test array_overlap
-        let overlap: bool = conn.query_row(
-            "SELECT array_overlap('[1,2,3]', '[3,4,5]')",
-            [],
-            |row| row.get(0)
-        ).unwrap();
+        let overlap: bool = conn
+            .query_row("SELECT array_overlap('[1,2,3]', '[3,4,5]')", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
         assert!(overlap);
     }
 }

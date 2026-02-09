@@ -533,6 +533,7 @@ mod tests {
 
     #[test]
     fn test_config_from_env() {
+        let _guard = crate::utils::test_env::lock_env();
         unsafe {
             std::env::set_var("PGSQLITE_MEMORY_CACHE_PRESSURE_MONITORING", "false");
             std::env::set_var("PGSQLITE_MEMORY_CACHE_PRESSURE_THRESHOLD_MB", "256");

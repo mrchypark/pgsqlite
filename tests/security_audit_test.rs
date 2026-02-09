@@ -1,5 +1,5 @@
 use pgsqlite::security::{
-    events, AuditConfig, SecurityAuditLogger, SecurityEvent, SecurityEventType, SecuritySeverity,
+    AuditConfig, SecurityAuditLogger, SecurityEvent, SecurityEventType, SecuritySeverity, events,
 };
 use std::net::IpAddr;
 

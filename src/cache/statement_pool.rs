@@ -1,8 +1,8 @@
+use crate::config::global_config;
+use once_cell::sync::Lazy;
+use rusqlite::{Connection, Params, Statement};
 use std::collections::HashMap;
 use std::sync::Mutex;
-use rusqlite::{Connection, Statement, Params};
-use once_cell::sync::Lazy;
-use crate::config::global_config;
 
 /// A pool of prepared SQLite statements for reuse
 /// This avoids the overhead of preparing the same statement multiple times
@@ -29,9 +29,8 @@ struct CachedStatement {
 }
 
 /// Global statement pool instance
-static GLOBAL_STATEMENT_POOL: Lazy<StatementPool> = Lazy::new(|| {
-    StatementPool::new(global_config().statement_pool_size)
-});
+static GLOBAL_STATEMENT_POOL: Lazy<StatementPool> =
+    Lazy::new(|| StatementPool::new(global_config().statement_pool_size));
 
 impl StatementPool {
     pub fn new(max_size: usize) -> Self {
@@ -45,22 +44,21 @@ impl StatementPool {
     pub fn global() -> &'static StatementPool {
         &GLOBAL_STATEMENT_POOL
     }
-    
+
     /// Generate a normalized fingerprint for batch INSERT queries
     /// This allows caching the same prepared statement for different batch sizes
     pub fn batch_insert_fingerprint(query: &str) -> Option<String> {
-        let upper_query = query.to_uppercase();
-        
+        // SQL keywords are ASCII; using ASCII uppercasing preserves byte indices for slicing.
+        let upper_query = query.to_ascii_uppercase();
+
         // Check if it's a batch INSERT (with or without spaces)
         if !upper_query.contains("INSERT") || (!query.contains("),(") && !query.contains("), (")) {
             return None;
         }
-        
+
         // Extract the pattern: INSERT INTO table (cols) VALUES
-        if let Some(_values_pos) = upper_query.find("VALUES") {
-            // Find the position in the original query (case-sensitive)
-            let original_values_pos = query.to_uppercase().find("VALUES").unwrap();
-            let prefix = &query[..original_values_pos + 6].trim(); // Include "VALUES"
+        if let Some(values_pos) = upper_query.find("VALUES") {
+            let prefix = query[..values_pos + 6].trim(); // Include "VALUES"
             // Replace the actual values with a placeholder
             Some(format!("{prefix} (?)"))
         } else {
@@ -80,7 +78,7 @@ impl StatementPool {
         } else {
             query.to_string()
         };
-        
+
         // Check if we have cached metadata for this query
         if let Some(metadata) = self.get_metadata(&cache_key) {
             // We have metadata, prepare the statement with that info
@@ -117,7 +115,7 @@ impl StatementPool {
         params: P,
     ) -> Result<(Vec<String>, crate::session::db_handler::DbRows), rusqlite::Error> {
         let (mut stmt, metadata) = self.prepare_and_cache(conn, query)?;
-        
+
         // Execute query and collect results
         let rows = stmt.query_map(params, |row| {
             let mut row_data = Vec::new();
@@ -126,30 +124,32 @@ impl StatementPool {
                     rusqlite::types::ValueRef::Null => row_data.push(None),
                     rusqlite::types::ValueRef::Integer(int_val) => {
                         // Check if this should be a boolean conversion
-                        let is_boolean = metadata.column_types.get(i)
+                        let is_boolean = metadata
+                            .column_types
+                            .get(i)
                             .and_then(|opt| opt.as_ref())
                             .map(|pg_type| {
                                 let type_lower = pg_type.to_lowercase();
                                 type_lower == "boolean" || type_lower == "bool"
                             })
                             .unwrap_or(false);
-                        
+
                         if is_boolean {
                             let bool_str = if int_val == 0 { "f" } else { "t" };
                             row_data.push(Some(bool_str.as_bytes().to_vec()));
                         } else {
                             row_data.push(Some(int_val.to_string().into_bytes()));
                         }
-                    },
+                    }
                     rusqlite::types::ValueRef::Real(f) => {
                         row_data.push(Some(f.to_string().into_bytes()));
-                    },
+                    }
                     rusqlite::types::ValueRef::Text(s) => {
                         row_data.push(Some(s.to_vec()));
-                    },
+                    }
                     rusqlite::types::ValueRef::Blob(b) => {
                         row_data.push(Some(b.to_vec()));
-                    },
+                    }
                 }
             }
             Ok(row_data)
@@ -180,15 +180,22 @@ impl StatementPool {
                 self.evict_oldest(&mut statements);
             }
 
-            statements.insert(query.clone(), CachedStatement {
-                metadata,
-                last_used: std::time::Instant::now(),
-            });
+            statements.insert(
+                query.clone(),
+                CachedStatement {
+                    metadata,
+                    last_used: std::time::Instant::now(),
+                },
+            );
         }
     }
 
     /// Extract metadata from a prepared statement
-    fn extract_metadata(&self, stmt: &Statement, query: &str) -> Result<StatementMetadata, rusqlite::Error> {
+    fn extract_metadata(
+        &self,
+        stmt: &Statement,
+        query: &str,
+    ) -> Result<StatementMetadata, rusqlite::Error> {
         let column_count = stmt.column_count();
         let mut column_names = Vec::new();
         let mut column_types = Vec::new();
@@ -225,9 +232,10 @@ impl StatementPool {
     /// Update the last used time for a cached statement
     pub fn touch(&self, query: &str) {
         if let Ok(mut statements) = self.statements.lock()
-            && let Some(cached) = statements.get_mut(query) {
-                cached.last_used = std::time::Instant::now();
-            }
+            && let Some(cached) = statements.get_mut(query)
+        {
+            cached.last_used = std::time::Instant::now();
+        }
     }
 
     /// Clear the statement pool (useful for DDL operations)
@@ -268,14 +276,16 @@ mod tests {
     fn test_statement_pool_basic() {
         let pool = StatementPool::new(10);
         let conn = Connection::open_in_memory().unwrap();
-        
+
         // Create a test table
-        conn.execute("CREATE TABLE test (id INTEGER, name TEXT)", []).unwrap();
-        conn.execute("INSERT INTO test VALUES (1, 'Alice'), (2, 'Bob')", []).unwrap();
+        conn.execute("CREATE TABLE test (id INTEGER, name TEXT)", [])
+            .unwrap();
+        conn.execute("INSERT INTO test VALUES (1, 'Alice'), (2, 'Bob')", [])
+            .unwrap();
 
         // Test caching behavior
         let query = "SELECT id, name FROM test WHERE id = ?";
-        
+
         // First execution should cache metadata
         let (_stmt1, metadata1) = pool.prepare_and_cache(&conn, query).unwrap();
         assert_eq!(metadata1.column_names, vec!["id", "name"]);
@@ -292,39 +302,59 @@ mod tests {
     fn test_statement_pool_execute() {
         let pool = StatementPool::new(10);
         let conn = Connection::open_in_memory().unwrap();
-        
-        conn.execute("CREATE TABLE test (id INTEGER, name TEXT)", []).unwrap();
-        
+
+        conn.execute("CREATE TABLE test (id INTEGER, name TEXT)", [])
+            .unwrap();
+
         // Test execute through pool
-        let rows_affected = pool.execute_cached(&conn, 
-            "INSERT INTO test (id, name) VALUES (?, ?)", 
-            [&1i32 as &dyn rusqlite::ToSql, &"Alice"]).unwrap();
+        let rows_affected = pool
+            .execute_cached(
+                &conn,
+                "INSERT INTO test (id, name) VALUES (?, ?)",
+                [&1i32 as &dyn rusqlite::ToSql, &"Alice"],
+            )
+            .unwrap();
         assert_eq!(rows_affected, 1);
 
         // Test query through pool
-        let (columns, rows) = pool.query_cached(&conn,
-            "SELECT id, name FROM test WHERE id = ?",
-            [&1i32 as &dyn rusqlite::ToSql]).unwrap();
+        let (columns, rows) = pool
+            .query_cached(
+                &conn,
+                "SELECT id, name FROM test WHERE id = ?",
+                [&1i32 as &dyn rusqlite::ToSql],
+            )
+            .unwrap();
         assert_eq!(columns, vec!["id", "name"]);
         assert_eq!(rows.len(), 1);
     }
-    
+
     #[test]
     fn test_batch_insert_fingerprint() {
         // Simple batch INSERT
         let query = "INSERT INTO users (id, name) VALUES (1, 'test'), (2, 'test2')";
         let fingerprint = StatementPool::batch_insert_fingerprint(query);
-        assert_eq!(fingerprint, Some("INSERT INTO users (id, name) VALUES (?)".to_string()));
-        
+        assert_eq!(
+            fingerprint,
+            Some("INSERT INTO users (id, name) VALUES (?)".to_string())
+        );
+
+        // Unicode before VALUES should not break byte indexing (e.g., ß uppercases to SS).
+        let unicode_query = "INSERT INTO ßusers (id, name) VALUES (1, 'test'), (2, 'test2')";
+        let unicode_fingerprint = StatementPool::batch_insert_fingerprint(unicode_query);
+        assert_eq!(
+            unicode_fingerprint,
+            Some("INSERT INTO ßusers (id, name) VALUES (?)".to_string())
+        );
+
         // Larger batch should have same fingerprint
         let query2 = "INSERT INTO users (id, name) VALUES (1, 'test'), (2, 'test2'), (3, 'test3')";
         let fingerprint2 = StatementPool::batch_insert_fingerprint(query2);
         assert_eq!(fingerprint, fingerprint2);
-        
+
         // Single row INSERT should not be fingerprinted
         let single = "INSERT INTO users (id, name) VALUES (1, 'test')";
         assert!(StatementPool::batch_insert_fingerprint(single).is_none());
-        
+
         // Non-INSERT should not be fingerprinted
         let select = "SELECT * FROM users WHERE id IN (1, 2, 3)";
         assert!(StatementPool::batch_insert_fingerprint(select).is_none());

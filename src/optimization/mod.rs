@@ -1,16 +1,18 @@
-use std::sync::{Arc, RwLock};
-use std::collections::HashMap;
-use std::time::Instant;
 use rusqlite::Connection;
+use std::collections::HashMap;
+use std::sync::{Arc, RwLock};
+use std::time::Instant;
 use tracing::{debug, info};
 
-use crate::query::{QueryPatternOptimizer, QueryPattern, OptimizationHints, QueryComplexity, ResultSize};
-use crate::rewriter::{ContextOptimizer};
-use crate::cache::LazySchemaLoader;
 use crate::PgSqliteError;
+use crate::cache::LazySchemaLoader;
+use crate::query::{
+    OptimizationHints, QueryComplexity, QueryPattern, QueryPatternOptimizer, ResultSize,
+};
+use crate::rewriter::ContextOptimizer;
 
-pub mod statement_cache_optimizer;
 pub mod read_only_optimizer;
+pub mod statement_cache_optimizer;
 pub mod string_utils;
 
 use read_only_optimizer::ReadOnlyOptimizer;
@@ -40,7 +42,7 @@ impl OptimizationManager {
         Self {
             pattern_optimizer: Arc::new(RwLock::new(QueryPatternOptimizer::new())),
             context_optimizer: Arc::new(RwLock::new(ContextOptimizer::new(300))), // 5 min TTL
-            lazy_schema_loader: Arc::new(LazySchemaLoader::new(600)), // 10 min TTL
+            lazy_schema_loader: Arc::new(LazySchemaLoader::new(600)),             // 10 min TTL
             read_only_optimizer: Arc::new(ReadOnlyOptimizer::new(200)), // Cache up to 200 query plans
             optimization_stats: Arc::new(RwLock::new(OptimizationStats::default())),
             enabled,
@@ -54,7 +56,7 @@ impl OptimizationManager {
         }
 
         let start_time = Instant::now();
-        
+
         // Update statistics
         {
             let mut stats = self.optimization_stats.write().unwrap();
@@ -65,13 +67,13 @@ impl OptimizationManager {
         let (pattern, hints) = {
             let mut pattern_optimizer = self.pattern_optimizer.write().unwrap();
             let result = pattern_optimizer.analyze_query(query);
-            
+
             // Update stats
             {
                 let mut stats = self.optimization_stats.write().unwrap();
                 stats.pattern_recognition_hits += 1;
             }
-            
+
             result
         };
 
@@ -94,26 +96,37 @@ impl OptimizationManager {
             stats.total_optimization_time_ms += start_time.elapsed().as_millis() as u64;
         }
 
-        debug!("Query optimization analysis completed in {}ms: {:?}", 
-               start_time.elapsed().as_millis(), result);
+        debug!(
+            "Query optimization analysis completed in {}ms: {:?}",
+            start_time.elapsed().as_millis(),
+            result
+        );
 
         Ok(result)
     }
 
     /// Get schema for a table using lazy loading
-    pub fn get_table_schema(&self, conn: &Connection, table_name: &str) -> Result<Option<crate::cache::schema::TableSchema>, rusqlite::Error> {
+    pub fn get_table_schema(
+        &self,
+        conn: &Connection,
+        table_name: &str,
+    ) -> Result<Option<crate::cache::schema::TableSchema>, rusqlite::Error> {
         let result = self.lazy_schema_loader.get_schema(conn, table_name)?;
-        
+
         if result.is_some() {
             let mut stats = self.optimization_stats.write().unwrap();
             stats.schema_cache_hits += 1;
         }
-        
+
         Ok(result)
     }
 
     /// Preload schemas for multiple tables (useful for JOIN queries)
-    pub fn preload_schemas(&self, conn: &Connection, table_names: &[String]) -> Result<(), rusqlite::Error> {
+    pub fn preload_schemas(
+        &self,
+        conn: &Connection,
+        table_names: &[String],
+    ) -> Result<(), rusqlite::Error> {
         if !self.enabled {
             return Ok(());
         }
@@ -122,19 +135,23 @@ impl OptimizationManager {
     }
 
     /// Optimize context for nested subqueries
-    pub fn optimize_context(&self, outer_context: &crate::rewriter::QueryContext, inner_contexts: Vec<crate::rewriter::QueryContext>) -> crate::rewriter::QueryContext {
+    pub fn optimize_context(
+        &self,
+        outer_context: &crate::rewriter::QueryContext,
+        inner_contexts: Vec<crate::rewriter::QueryContext>,
+    ) -> crate::rewriter::QueryContext {
         if !self.enabled {
             return outer_context.clone();
         }
 
         let mut context_optimizer = self.context_optimizer.write().unwrap();
         let result = context_optimizer.optimize_nested_context(outer_context, inner_contexts);
-        
+
         {
             let mut stats = self.optimization_stats.write().unwrap();
             stats.context_cache_hits += 1;
         }
-        
+
         result
     }
 
@@ -151,16 +168,17 @@ impl OptimizationManager {
 
     /// Execute a read-only query using optimizations
     pub fn execute_read_only_query(
-        &self, 
-        conn: &Connection, 
-        query: &str, 
-        schema_cache: &crate::cache::SchemaCache
+        &self,
+        conn: &Connection,
+        query: &str,
+        schema_cache: &crate::cache::SchemaCache,
     ) -> Result<Option<crate::session::db_handler::DbResponse>, rusqlite::Error> {
         if !self.enabled {
             return Ok(None);
         }
 
-        self.read_only_optimizer.execute_read_only_query(conn, query, schema_cache)
+        self.read_only_optimizer
+            .execute_read_only_query(conn, query, schema_cache)
     }
 
     /// Get read-only optimizer statistics
@@ -191,7 +209,10 @@ impl OptimizationManager {
             let cache_hit_rate = pattern_optimizer.get_cache_hit_rate();
             if cache_hit_rate < 0.5 {
                 pattern_optimizer.clear_cache();
-                info!("Cleared pattern cache due to low hit rate: {:.2}", cache_hit_rate);
+                info!(
+                    "Cleared pattern cache due to low hit rate: {:.2}",
+                    cache_hit_rate
+                );
             }
         }
 
@@ -199,7 +220,10 @@ impl OptimizationManager {
         let read_only_hit_rate = self.read_only_optimizer.get_cache_hit_rate();
         if read_only_hit_rate < 0.3 {
             self.read_only_optimizer.clear_cache();
-            info!("Cleared read-only cache due to low hit rate: {:.2}", read_only_hit_rate);
+            info!(
+                "Cleared read-only cache due to low hit rate: {:.2}",
+                read_only_hit_rate
+            );
         }
     }
 
@@ -207,13 +231,14 @@ impl OptimizationManager {
     pub fn get_effectiveness_metrics(&self) -> OptimizationEffectiveness {
         let stats = self.get_stats();
         let total_queries = stats.total_queries;
-        
+
         if total_queries == 0 {
             return OptimizationEffectiveness::default();
         }
 
         let fast_path_rate = stats.fast_path_hits as f64 / total_queries as f64;
-        let cache_hit_rate = (stats.context_cache_hits + stats.schema_cache_hits) as f64 / (total_queries * 2) as f64;
+        let cache_hit_rate = (stats.context_cache_hits + stats.schema_cache_hits) as f64
+            / (total_queries * 2) as f64;
         let avg_optimization_time = stats.total_optimization_time_ms as f64 / total_queries as f64;
 
         let pattern_stats = self.pattern_optimizer.read().unwrap().get_pattern_stats();
@@ -246,9 +271,7 @@ impl OptimizationManager {
                     ExecutionStrategy::StandardExecution
                 }
             }
-            QueryComplexity::Complex => {
-                ExecutionStrategy::OptimizedComplex
-            }
+            QueryComplexity::Complex => ExecutionStrategy::OptimizedComplex,
         }
     }
 }
@@ -324,77 +347,107 @@ impl Default for OptimizationEffectiveness {
 }
 
 impl OptimizationStats {
-    pub fn total_queries(&self) -> u64 { self.total_queries }
-    pub fn fast_path_hits(&self) -> u64 { self.fast_path_hits }
-    pub fn context_cache_hits(&self) -> u64 { self.context_cache_hits }
-    pub fn schema_cache_hits(&self) -> u64 { self.schema_cache_hits }
-    pub fn pattern_recognition_hits(&self) -> u64 { self.pattern_recognition_hits }
-    pub fn total_optimization_time_ms(&self) -> u64 { self.total_optimization_time_ms }
+    pub fn total_queries(&self) -> u64 {
+        self.total_queries
+    }
+    pub fn fast_path_hits(&self) -> u64 {
+        self.fast_path_hits
+    }
+    pub fn context_cache_hits(&self) -> u64 {
+        self.context_cache_hits
+    }
+    pub fn schema_cache_hits(&self) -> u64 {
+        self.schema_cache_hits
+    }
+    pub fn pattern_recognition_hits(&self) -> u64 {
+        self.pattern_recognition_hits
+    }
+    pub fn total_optimization_time_ms(&self) -> u64 {
+        self.total_optimization_time_ms
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use rusqlite::Connection;
-    
+
     #[test]
     fn test_optimization_manager_creation() {
         let manager = OptimizationManager::new(true);
         let stats = manager.get_stats();
         assert_eq!(stats.total_queries, 0);
     }
-    
+
     #[test]
     fn test_query_analysis() {
         let manager = OptimizationManager::new(true);
-        let result = manager.analyze_query("SELECT * FROM users WHERE id = 1").unwrap();
-        
+        let result = manager
+            .analyze_query("SELECT * FROM users WHERE id = 1")
+            .unwrap();
+
         assert_eq!(result.pattern, QueryPattern::SimpleSelect);
         assert!(result.should_use_fast_path);
         assert!(result.should_cache_result);
-        assert_eq!(result.recommended_execution_strategy, ExecutionStrategy::UltraFastPath);
-        
+        assert_eq!(
+            result.recommended_execution_strategy,
+            ExecutionStrategy::UltraFastPath
+        );
+
         let stats = manager.get_stats();
         assert_eq!(stats.total_queries, 1);
         assert_eq!(stats.pattern_recognition_hits, 1);
     }
-    
+
     #[test]
     fn test_disabled_optimization() {
         let manager = OptimizationManager::new(false);
-        let result = manager.analyze_query("SELECT * FROM users WHERE id = 1").unwrap();
-        
+        let result = manager
+            .analyze_query("SELECT * FROM users WHERE id = 1")
+            .unwrap();
+
         assert_eq!(result.pattern, QueryPattern::ComplexQuery);
         assert!(!result.should_use_fast_path);
-        assert_eq!(result.recommended_execution_strategy, ExecutionStrategy::StandardExecution);
+        assert_eq!(
+            result.recommended_execution_strategy,
+            ExecutionStrategy::StandardExecution
+        );
     }
-    
+
     #[test]
     fn test_schema_loading() {
         let manager = OptimizationManager::new(true);
         let conn = Connection::open_in_memory().unwrap();
-        
+
         // Create a test table
-        conn.execute("CREATE TABLE test_table (id INTEGER, name TEXT)", []).unwrap();
-        
+        conn.execute("CREATE TABLE test_table (id INTEGER, name TEXT)", [])
+            .unwrap();
+
         // Load schema
-        let schema = manager.get_table_schema(&conn, "test_table").unwrap().unwrap();
+        let schema = manager
+            .get_table_schema(&conn, "test_table")
+            .unwrap()
+            .unwrap();
         assert_eq!(schema.columns.len(), 2);
-        
+
         // Check that cache hit is recorded
         let stats = manager.get_stats();
         assert_eq!(stats.schema_cache_hits, 1);
     }
-    
+
     #[test]
     fn test_effectiveness_metrics() {
         let manager = OptimizationManager::new(true);
-        
+
         // Analyze a few queries to get stats
-        let result1 = manager.analyze_query("SELECT * FROM users WHERE id = 1").unwrap();
-        let result2 = manager.analyze_query("INSERT INTO users (name) VALUES ('test')").unwrap();
+        let result1 = manager
+            .analyze_query("SELECT * FROM users WHERE id = 1")
+            .unwrap();
+        let result2 = manager
+            .analyze_query("INSERT INTO users (name) VALUES ('test')")
+            .unwrap();
         let result3 = manager.analyze_query("SELECT COUNT(*) FROM users").unwrap();
-        
+
         // Update fast path hits manually since we're not actually executing queries
         {
             let mut stats = manager.optimization_stats.write().unwrap();
@@ -408,7 +461,7 @@ mod tests {
                 stats.fast_path_hits += 1;
             }
         }
-        
+
         let effectiveness = manager.get_effectiveness_metrics();
         assert!(effectiveness.fast_path_rate >= 0.0);
         assert!(effectiveness.avg_optimization_time_ms >= 0.0);

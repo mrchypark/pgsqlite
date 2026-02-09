@@ -22,7 +22,10 @@ async fn test_unaccent_extension_and_wrapper_function() {
 
     // unaccent(regdictionary, text) overload
     let v: String = client
-        .query_one("SELECT unaccent('public.unaccent'::regdictionary, 'Hôtel')", &[])
+        .query_one(
+            "SELECT unaccent('public.unaccent'::regdictionary, 'Hôtel')",
+            &[],
+        )
         .await
         .unwrap()
         .get(0);
@@ -55,7 +58,10 @@ async fn test_unaccent_extension_and_wrapper_function() {
 
     // Ensure it shows up in pg_proc as a user function
     let count: i64 = client
-        .query_one("SELECT count(*) FROM pg_proc WHERE proname = 'unaccent_immutable'", &[])
+        .query_one(
+            "SELECT count(*) FROM pg_proc WHERE proname = 'unaccent_immutable'",
+            &[],
+        )
         .await
         .unwrap()
         .get(0);

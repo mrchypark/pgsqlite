@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use rcgen::{CertificateParams, DistinguishedName};
-use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use rustls::ServerConfig;
+use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use rustls_pemfile;
 use std::fs;
 use std::io::BufReader;
@@ -29,14 +29,26 @@ impl CertificateManager {
 
     pub async fn initialize(&self) -> Result<(TlsAcceptor, CertificateSource)> {
         let cert_source = self.discover_certificates().await?;
-        
+
         // Log the certificate source
         match &cert_source {
-            CertificateSource::Provided { cert_path, key_path } => {
-                info!("SSL enabled with provided certificates from {} and {}", cert_path, key_path);
+            CertificateSource::Provided {
+                cert_path,
+                key_path,
+            } => {
+                info!(
+                    "SSL enabled with provided certificates from {} and {}",
+                    cert_path, key_path
+                );
             }
-            CertificateSource::FileSystem { cert_path, key_path } => {
-                info!("SSL enabled with existing certificates from {} and {}", cert_path, key_path);
+            CertificateSource::FileSystem {
+                cert_path,
+                key_path,
+            } => {
+                info!(
+                    "SSL enabled with existing certificates from {} and {}",
+                    cert_path, key_path
+                );
             }
             CertificateSource::Generated { .. } => {
                 if self.config.database == ":memory:" || self.config.in_memory {
@@ -64,20 +76,26 @@ impl CertificateManager {
         }
 
         // Priority 2: Check filesystem next to database
-        if !self.config.in_memory && self.config.database != ":memory:" && !self.config.ssl_ephemeral
-            && let Some(cert_source) = self.check_filesystem_certificates()? {
-                return Ok(cert_source);
-            }
+        if !self.config.in_memory
+            && self.config.database != ":memory:"
+            && !self.config.ssl_ephemeral
+            && let Some(cert_source) = self.check_filesystem_certificates()?
+        {
+            return Ok(cert_source);
+        }
 
         // Priority 3: Generate certificates
         debug!("Generating new certificates");
         let (cert, key) = self.generate_certificates()?;
 
         // Save to filesystem if appropriate
-        if !self.config.in_memory && self.config.database != ":memory:" && !self.config.ssl_ephemeral
-            && let Err(e) = self.save_certificates(&cert, &key) {
-                warn!("Failed to save generated certificates: {}", e);
-            }
+        if !self.config.in_memory
+            && self.config.database != ":memory:"
+            && !self.config.ssl_ephemeral
+            && let Err(e) = self.save_certificates(&cert, &key)
+        {
+            warn!("Failed to save generated certificates: {}", e);
+        }
 
         Ok(CertificateSource::Generated { cert, key })
     }
@@ -103,9 +121,10 @@ impl CertificateManager {
     }
 
     fn generate_certificates(&self) -> Result<(Vec<u8>, Vec<u8>)> {
-        let mut params = CertificateParams::new(vec!["localhost".to_string(), "127.0.0.1".to_string()])
-            .context("Failed to create certificate params")?;
-        
+        let mut params =
+            CertificateParams::new(vec!["localhost".to_string(), "127.0.0.1".to_string()])
+                .context("Failed to create certificate params")?;
+
         let mut distinguished_name = DistinguishedName::new();
         distinguished_name.push(rcgen::DnType::CommonName, "pgsqlite");
         distinguished_name.push(rcgen::DnType::OrganizationName, "pgsqlite");
@@ -113,11 +132,12 @@ impl CertificateManager {
 
         // Set validity period based on ephemeral flag
         // Note: rcgen uses time crate internally
-        if self.config.ssl_ephemeral || self.config.in_memory || self.config.database == ":memory:" {
+        if self.config.ssl_ephemeral || self.config.in_memory || self.config.database == ":memory:"
+        {
             // 90 days for ephemeral certificates
             // rcgen will set a reasonable default validity period
         } else {
-            // 10 years for persistent certificates  
+            // 10 years for persistent certificates
             // rcgen will set a reasonable default validity period
         }
 
@@ -153,16 +173,23 @@ impl CertificateManager {
             fs::set_permissions(&key_path, perms)?;
         }
 
-        info!("Generated and saved new certificates to {:?} and {:?}", cert_path, key_path);
+        info!(
+            "Generated and saved new certificates to {:?} and {:?}",
+            cert_path, key_path
+        );
         Ok(())
     }
 
     async fn create_tls_acceptor(&self, cert_source: &CertificateSource) -> Result<TlsAcceptor> {
         let (certs, key) = match cert_source {
-            CertificateSource::Provided { cert_path, key_path } |
-            CertificateSource::FileSystem { cert_path, key_path } => {
-                self.load_certificates_from_files(cert_path, key_path)?
+            CertificateSource::Provided {
+                cert_path,
+                key_path,
             }
+            | CertificateSource::FileSystem {
+                cert_path,
+                key_path,
+            } => self.load_certificates_from_files(cert_path, key_path)?,
             CertificateSource::Generated { cert, key } => {
                 self.parse_certificates_from_memory(cert, key)?
             }
@@ -176,7 +203,11 @@ impl CertificateManager {
         Ok(TlsAcceptor::from(Arc::new(config)))
     }
 
-    fn load_certificates_from_files(&self, cert_path: &str, key_path: &str) -> Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>)> {
+    fn load_certificates_from_files(
+        &self,
+        cert_path: &str,
+        key_path: &str,
+    ) -> Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>)> {
         // Load certificate
         let cert_file = fs::File::open(cert_path)
             .with_context(|| format!("Failed to open certificate file: {cert_path}"))?;
@@ -193,7 +224,7 @@ impl CertificateManager {
         let key_file = fs::File::open(key_path)
             .with_context(|| format!("Failed to open key file: {key_path}"))?;
         let mut key_reader = BufReader::new(key_file);
-        
+
         let key = rustls_pemfile::private_key(&mut key_reader)?
             .context("No private key found in file")?;
 
@@ -204,14 +235,21 @@ impl CertificateManager {
             let metadata = fs::metadata(key_path)?;
             let mode = metadata.permissions().mode();
             if mode & 0o077 != 0 {
-                warn!("Private key file {} has overly permissive permissions: {:o}", key_path, mode);
+                warn!(
+                    "Private key file {} has overly permissive permissions: {:o}",
+                    key_path, mode
+                );
             }
         }
 
         Ok((certs, key))
     }
 
-    fn parse_certificates_from_memory(&self, cert: &[u8], key: &[u8]) -> Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>)> {
+    fn parse_certificates_from_memory(
+        &self,
+        cert: &[u8],
+        key: &[u8],
+    ) -> Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>)> {
         let mut cert_reader = BufReader::new(cert);
         let certs = rustls_pemfile::certs(&mut cert_reader)
             .collect::<Result<Vec<_>, _>>()

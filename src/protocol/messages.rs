@@ -4,6 +4,8 @@ use std::collections::HashMap;
 pub enum FrontendMessage {
     SslRequest,
     StartupMessage(StartupMessage),
+    /// PasswordMessage ('p') used during authentication.
+    Password(String),
     Query(String),
     Parse {
         name: String,

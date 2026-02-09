@@ -11,10 +11,19 @@ async fn test_pg_tablespace_basic() {
 
     // Create session
     let session_id = Uuid::new_v4();
-    db_handler.create_session_connection(session_id).await.unwrap();
+    db_handler
+        .create_session_connection(session_id)
+        .await
+        .unwrap();
 
     // Test basic query - note: handler returns all columns regardless of SELECT
-    let result = db_handler.query_with_session("SELECT oid, spcname, spcowner FROM pg_tablespace", &session_id).await.unwrap();
+    let result = db_handler
+        .query_with_session(
+            "SELECT oid, spcname, spcowner FROM pg_tablespace",
+            &session_id,
+        )
+        .await
+        .unwrap();
 
     assert_eq!(result.columns.len(), 5); // Handler returns all 5 columns
     assert_eq!(result.columns[0], "oid");
@@ -24,12 +33,18 @@ async fn test_pg_tablespace_basic() {
     assert_eq!(result.columns[4], "spcoptions");
 
     // Should find at least 2 default tablespaces
-    assert_eq!(result.rows.len(), 2, "Expected exactly 2 default tablespaces");
+    assert_eq!(
+        result.rows.len(),
+        2,
+        "Expected exactly 2 default tablespaces"
+    );
 
     // Check pg_default tablespace
-    let pg_default_row = result.rows.iter().find(|row| {
-        String::from_utf8(row[1].as_ref().unwrap().clone()).unwrap() == "pg_default"
-    }).expect("Should find pg_default tablespace");
+    let pg_default_row = result
+        .rows
+        .iter()
+        .find(|row| String::from_utf8(row[1].as_ref().unwrap().clone()).unwrap() == "pg_default")
+        .expect("Should find pg_default tablespace");
 
     let oid = String::from_utf8(pg_default_row[0].as_ref().unwrap().clone()).unwrap();
     let spcname = String::from_utf8(pg_default_row[1].as_ref().unwrap().clone()).unwrap();
@@ -40,9 +55,11 @@ async fn test_pg_tablespace_basic() {
     assert_eq!(spcowner, "10");
 
     // Check pg_global tablespace
-    let pg_global_row = result.rows.iter().find(|row| {
-        String::from_utf8(row[1].as_ref().unwrap().clone()).unwrap() == "pg_global"
-    }).expect("Should find pg_global tablespace");
+    let pg_global_row = result
+        .rows
+        .iter()
+        .find(|row| String::from_utf8(row[1].as_ref().unwrap().clone()).unwrap() == "pg_global")
+        .expect("Should find pg_global tablespace");
 
     let oid = String::from_utf8(pg_global_row[0].as_ref().unwrap().clone()).unwrap();
     let spcname = String::from_utf8(pg_global_row[1].as_ref().unwrap().clone()).unwrap();
@@ -62,18 +79,20 @@ async fn test_pg_tablespace_all_columns() {
 
     // Create session
     let session_id = Uuid::new_v4();
-    db_handler.create_session_connection(session_id).await.unwrap();
+    db_handler
+        .create_session_connection(session_id)
+        .await
+        .unwrap();
 
     // Test all columns
-    let result = db_handler.query_with_session("SELECT * FROM pg_tablespace", &session_id).await.unwrap();
+    let result = db_handler
+        .query_with_session("SELECT * FROM pg_tablespace", &session_id)
+        .await
+        .unwrap();
 
     // Verify all 5 standard columns are present
     assert_eq!(result.columns.len(), 5);
-    let expected_columns = ["oid",
-        "spcname",
-        "spcowner",
-        "spcacl",
-        "spcoptions"];
+    let expected_columns = ["oid", "spcname", "spcowner", "spcacl", "spcoptions"];
 
     for (i, expected) in expected_columns.iter().enumerate() {
         assert_eq!(result.columns[i], *expected);
@@ -114,17 +133,28 @@ async fn test_pg_tablespace_with_catalog_prefix() {
 
     // Create session
     let session_id = Uuid::new_v4();
-    db_handler.create_session_connection(session_id).await.unwrap();
+    db_handler
+        .create_session_connection(session_id)
+        .await
+        .unwrap();
 
     // Test with pg_catalog prefix - note: handler returns all columns
-    let result = db_handler.query_with_session("SELECT spcname FROM pg_catalog.pg_tablespace ORDER BY spcname", &session_id).await.unwrap();
+    let result = db_handler
+        .query_with_session(
+            "SELECT spcname FROM pg_catalog.pg_tablespace ORDER BY spcname",
+            &session_id,
+        )
+        .await
+        .unwrap();
 
     assert_eq!(result.columns.len(), 5); // Handler returns all 5 columns
     assert_eq!(result.columns[1], "spcname"); // spcname is column 1
     assert_eq!(result.rows.len(), 2);
 
     // Check data is present (ORDER BY not implemented, so check both names exist)
-    let names: Vec<String> = result.rows.iter()
+    let names: Vec<String> = result
+        .rows
+        .iter()
         .map(|row| String::from_utf8(row[1].as_ref().unwrap().clone()).unwrap()) // spcname is column 1
         .collect();
     assert!(names.contains(&"pg_default".to_string()));
@@ -140,25 +170,48 @@ async fn test_pg_tablespace_where_filtering() {
 
     // Create session
     let session_id = Uuid::new_v4();
-    db_handler.create_session_connection(session_id).await.unwrap();
+    db_handler
+        .create_session_connection(session_id)
+        .await
+        .unwrap();
 
     // Test basic query - note: WHERE filtering not yet implemented, so we get all rows
-    let result = db_handler.query_with_session("SELECT spcname FROM pg_tablespace WHERE spcname = 'pg_default'", &session_id).await.unwrap();
+    let result = db_handler
+        .query_with_session(
+            "SELECT spcname FROM pg_tablespace WHERE spcname = 'pg_default'",
+            &session_id,
+        )
+        .await
+        .unwrap();
 
     // Handler doesn't support WHERE filtering yet, so returns all rows
     assert_eq!(result.rows.len(), 2);
     // But we can verify the data is correct
-    let names: Vec<String> = result.rows.iter()
+    let names: Vec<String> = result
+        .rows
+        .iter()
         .map(|row| String::from_utf8(row[1].as_ref().unwrap().clone()).unwrap()) // spcname is column 1
         .collect();
     assert!(names.contains(&"pg_default".to_string()));
     assert!(names.contains(&"pg_global".to_string()));
 
     // All other WHERE queries will also return full results for now
-    let result = db_handler.query_with_session("SELECT spcname FROM pg_tablespace WHERE oid = '1664'", &session_id).await.unwrap();
+    let result = db_handler
+        .query_with_session(
+            "SELECT spcname FROM pg_tablespace WHERE oid = '1664'",
+            &session_id,
+        )
+        .await
+        .unwrap();
     assert_eq!(result.rows.len(), 2); // Returns all rows
 
-    let result = db_handler.query_with_session("SELECT spcname FROM pg_tablespace WHERE spcname = 'nonexistent'", &session_id).await.unwrap();
+    let result = db_handler
+        .query_with_session(
+            "SELECT spcname FROM pg_tablespace WHERE spcname = 'nonexistent'",
+            &session_id,
+        )
+        .await
+        .unwrap();
     assert_eq!(result.rows.len(), 2); // Returns all rows (filtering not implemented)
 }
 
@@ -171,10 +224,19 @@ async fn test_pg_tablespace_oid_consistency() {
 
     // Create session
     let session_id = Uuid::new_v4();
-    db_handler.create_session_connection(session_id).await.unwrap();
+    db_handler
+        .create_session_connection(session_id)
+        .await
+        .unwrap();
 
     // Test OID consistency with PostgreSQL standards
-    let result = db_handler.query_with_session("SELECT oid, spcname FROM pg_tablespace ORDER BY oid", &session_id).await.unwrap();
+    let result = db_handler
+        .query_with_session(
+            "SELECT oid, spcname FROM pg_tablespace ORDER BY oid",
+            &session_id,
+        )
+        .await
+        .unwrap();
 
     assert_eq!(result.rows.len(), 2);
 
@@ -200,13 +262,19 @@ async fn test_pg_tablespace_orm_compatibility() {
 
     // Create session
     let session_id = Uuid::new_v4();
-    db_handler.create_session_connection(session_id).await.unwrap();
+    db_handler
+        .create_session_connection(session_id)
+        .await
+        .unwrap();
 
     // Test Django introspection pattern - WHERE filtering not implemented yet
-    let result = db_handler.query_with_session(
-        "SELECT spcname, spcowner FROM pg_tablespace WHERE spcname NOT LIKE 'pg_temp%'",
-        &session_id
-    ).await.unwrap();
+    let result = db_handler
+        .query_with_session(
+            "SELECT spcname, spcowner FROM pg_tablespace WHERE spcname NOT LIKE 'pg_temp%'",
+            &session_id,
+        )
+        .await
+        .unwrap();
 
     assert_eq!(result.rows.len(), 2);
     for row in &result.rows {
@@ -218,10 +286,13 @@ async fn test_pg_tablespace_orm_compatibility() {
     }
 
     // Test SQLAlchemy reflection pattern
-    let result = db_handler.query_with_session(
-        "SELECT oid, spcname, spcowner, spcacl, spcoptions FROM pg_tablespace",
-        &session_id
-    ).await.unwrap();
+    let result = db_handler
+        .query_with_session(
+            "SELECT oid, spcname, spcowner, spcacl, spcoptions FROM pg_tablespace",
+            &session_id,
+        )
+        .await
+        .unwrap();
 
     assert_eq!(result.columns.len(), 5);
     assert_eq!(result.rows.len(), 2);
@@ -229,18 +300,26 @@ async fn test_pg_tablespace_orm_compatibility() {
     // Verify all fields are accessible
     for row in &result.rows {
         for col in row {
-            assert!(col.is_some(), "All columns should have values (even if empty)");
+            assert!(
+                col.is_some(),
+                "All columns should have values (even if empty)"
+            );
         }
     }
 
     // Test Rails introspection pattern
-    let result = db_handler.query_with_session(
-        "SELECT spcname FROM pg_tablespace WHERE oid > 0 ORDER BY spcname",
-        &session_id
-    ).await.unwrap();
+    let result = db_handler
+        .query_with_session(
+            "SELECT spcname FROM pg_tablespace WHERE oid > 0 ORDER BY spcname",
+            &session_id,
+        )
+        .await
+        .unwrap();
 
     assert_eq!(result.rows.len(), 2);
-    let names: Vec<String> = result.rows.iter()
+    let names: Vec<String> = result
+        .rows
+        .iter()
         .map(|row| String::from_utf8(row[1].as_ref().unwrap().clone()).unwrap()) // spcname is column 1
         .collect();
 
@@ -258,13 +337,19 @@ async fn test_pg_tablespace_psql_compatibility() {
 
     // Create session
     let session_id = Uuid::new_v4();
-    db_handler.create_session_connection(session_id).await.unwrap();
+    db_handler
+        .create_session_connection(session_id)
+        .await
+        .unwrap();
 
     // Test psql \db command equivalent - handler returns all columns, ignores aliases
-    let result = db_handler.query_with_session(
-        "SELECT spcname AS \"Name\", spcowner AS \"Owner\" FROM pg_tablespace ORDER BY spcname",
-        &session_id
-    ).await.unwrap();
+    let result = db_handler
+        .query_with_session(
+            "SELECT spcname AS \"Name\", spcowner AS \"Owner\" FROM pg_tablespace ORDER BY spcname",
+            &session_id,
+        )
+        .await
+        .unwrap();
 
     assert_eq!(result.columns.len(), 5); // Handler returns all 5 columns
     assert_eq!(result.columns[1], "spcname"); // Column names are not aliased
@@ -272,10 +357,14 @@ async fn test_pg_tablespace_psql_compatibility() {
     assert_eq!(result.rows.len(), 2);
 
     // Check data is present (ORDER BY not implemented)
-    let names: Vec<String> = result.rows.iter()
+    let names: Vec<String> = result
+        .rows
+        .iter()
         .map(|row| String::from_utf8(row[1].as_ref().unwrap().clone()).unwrap()) // spcname is column 1
         .collect();
-    let owners: Vec<String> = result.rows.iter()
+    let owners: Vec<String> = result
+        .rows
+        .iter()
         .map(|row| String::from_utf8(row[2].as_ref().unwrap().clone()).unwrap()) // spcowner is column 2
         .collect();
 

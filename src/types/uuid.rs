@@ -9,44 +9,52 @@ impl UuidHandler {
         if value.len() != 36 {
             return false;
         }
-        
+
         let parts: Vec<&str> = value.split('-').collect();
         if parts.len() != 5 {
             return false;
         }
-        
-        parts[0].len() == 8 
-            && parts[1].len() == 4 
-            && parts[2].len() == 4 
-            && parts[3].len() == 4 
-            && parts[4].len() == 12 
-            && parts.iter().all(|p| p.chars().all(|c| c.is_ascii_hexdigit()))
+
+        parts[0].len() == 8
+            && parts[1].len() == 4
+            && parts[2].len() == 4
+            && parts[3].len() == 4
+            && parts[4].len() == 12
+            && parts
+                .iter()
+                .all(|p| p.chars().all(|c| c.is_ascii_hexdigit()))
     }
-    
+
     /// Normalize UUID to lowercase
     pub fn normalize_uuid(value: &str) -> String {
         value.to_lowercase()
     }
-    
+
     /// Convert UUID string to bytes (for binary protocol)
     pub fn uuid_to_bytes(value: &str) -> Result<Vec<u8>, PgSqliteError> {
         if !Self::validate_uuid(value) {
-            return Err(PgSqliteError::TypeConversion(format!("Invalid UUID format: {value}")));
+            return Err(PgSqliteError::TypeConversion(format!(
+                "Invalid UUID format: {value}"
+            )));
         }
-        
+
         let normalized = value.replace('-', "");
         hex::decode(normalized)
             .map_err(|e| PgSqliteError::TypeConversion(format!("Failed to decode UUID: {e}")))
     }
-    
+
     /// Convert bytes to UUID string
     pub fn bytes_to_uuid(bytes: &[u8]) -> Result<String, PgSqliteError> {
         if bytes.len() != 16 {
-            return Err(PgSqliteError::TypeConversion(format!("Invalid UUID byte length: {}", bytes.len())));
+            return Err(PgSqliteError::TypeConversion(format!(
+                "Invalid UUID byte length: {}",
+                bytes.len()
+            )));
         }
-        
+
         let hex = hex::encode(bytes);
-        Ok(format!("{}-{}-{}-{}-{}",
+        Ok(format!(
+            "{}-{}-{}-{}-{}",
             &hex[0..8],
             &hex[8..12],
             &hex[12..16],
@@ -64,44 +72,58 @@ pub fn generate_uuid_v4() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_validate_uuid() {
-        assert!(UuidHandler::validate_uuid("550e8400-e29b-41d4-a716-446655440000"));
-        assert!(UuidHandler::validate_uuid("6ba7b810-9dad-11d1-80b4-00c04fd430c8"));
-        assert!(UuidHandler::validate_uuid("00000000-0000-0000-0000-000000000000"));
-        
-        assert!(!UuidHandler::validate_uuid("550e8400-e29b-41d4-a716-44665544000")); // Too short
-        assert!(!UuidHandler::validate_uuid("550e8400-e29b-41d4-a716-4466554400000")); // Too long
-        assert!(!UuidHandler::validate_uuid("550e8400e29b41d4a716446655440000")); // No dashes
-        assert!(!UuidHandler::validate_uuid("550e8400-e29b-41d4-a716-44665544000g")); // Invalid char
+        assert!(UuidHandler::validate_uuid(
+            "550e8400-e29b-41d4-a716-446655440000"
+        ));
+        assert!(UuidHandler::validate_uuid(
+            "6ba7b810-9dad-11d1-80b4-00c04fd430c8"
+        ));
+        assert!(UuidHandler::validate_uuid(
+            "00000000-0000-0000-0000-000000000000"
+        ));
+
+        assert!(!UuidHandler::validate_uuid(
+            "550e8400-e29b-41d4-a716-44665544000"
+        )); // Too short
+        assert!(!UuidHandler::validate_uuid(
+            "550e8400-e29b-41d4-a716-4466554400000"
+        )); // Too long
+        assert!(!UuidHandler::validate_uuid(
+            "550e8400e29b41d4a716446655440000"
+        )); // No dashes
+        assert!(!UuidHandler::validate_uuid(
+            "550e8400-e29b-41d4-a716-44665544000g"
+        )); // Invalid char
     }
-    
+
     #[test]
     fn test_uuid_conversions() {
         let uuid_str = "550e8400-e29b-41d4-a716-446655440000";
-        
+
         // Test to bytes
         let bytes = UuidHandler::uuid_to_bytes(uuid_str).unwrap();
         assert_eq!(bytes.len(), 16);
-        
+
         // Test back to string
         let uuid_back = UuidHandler::bytes_to_uuid(&bytes).unwrap();
         assert_eq!(uuid_back, uuid_str);
     }
-    
+
     #[test]
     fn test_generate_uuid_v4() {
         let uuid1 = generate_uuid_v4();
         let uuid2 = generate_uuid_v4();
-        
+
         // Should be valid UUIDs
         assert!(UuidHandler::validate_uuid(&uuid1));
         assert!(UuidHandler::validate_uuid(&uuid2));
-        
+
         // Should be different
         assert_ne!(uuid1, uuid2);
-        
+
         // Should have version 4 marker
         assert_eq!(&uuid1[14..15], "4");
         assert_eq!(&uuid2[14..15], "4");

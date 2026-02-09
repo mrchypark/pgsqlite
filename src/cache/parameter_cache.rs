@@ -1,7 +1,7 @@
+use once_cell::sync::Lazy;
 use std::collections::HashMap;
 use std::sync::RwLock;
 use std::time::{Duration, Instant};
-use once_cell::sync::Lazy;
 
 /// Cache for parameter type information to avoid repeated analysis
 pub struct ParameterTypeCache {
@@ -29,12 +29,12 @@ pub static GLOBAL_PARAMETER_CACHE: Lazy<ParameterTypeCache> = Lazy::new(|| {
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(500);
-    
+
     let ttl_minutes = std::env::var("PGSQLITE_PARAM_CACHE_TTL_MINUTES")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(30);
-    
+
     ParameterTypeCache::new(cache_size, Duration::from_secs(ttl_minutes * 60))
 });
 
@@ -44,27 +44,27 @@ impl ParameterTypeCache {
             cache: RwLock::new(super::LruCache::new(capacity, ttl)),
         }
     }
-    
+
     /// Get cached parameter info for a query
     pub fn get(&self, query: &str) -> Option<CachedParameterInfo> {
         let cache = self.cache.read().ok()?;
         cache.get(&query.to_string())
     }
-    
+
     /// Cache parameter info for a query
     pub fn insert(&self, query: String, info: CachedParameterInfo) {
         if let Ok(cache) = self.cache.write() {
             cache.insert(query, info);
         }
     }
-    
+
     /// Clear the cache
     pub fn clear(&self) {
         if let Ok(cache) = self.cache.write() {
             cache.clear();
         }
     }
-    
+
     /// Get cache statistics
     pub fn stats(&self) -> ParameterCacheStats {
         ParameterCacheStats {
@@ -100,44 +100,44 @@ impl ParameterValueCache {
             max_size,
         }
     }
-    
+
     pub fn get_or_convert<F>(
-        &self, 
-        bytes: &[u8], 
-        param_type: i32, 
+        &self,
+        bytes: &[u8],
+        param_type: i32,
         format: i16,
-        convert_fn: F
+        convert_fn: F,
     ) -> Result<rusqlite::types::Value, crate::PgSqliteError>
     where
-        F: FnOnce() -> Result<rusqlite::types::Value, crate::PgSqliteError>
+        F: FnOnce() -> Result<rusqlite::types::Value, crate::PgSqliteError>,
     {
         let key = ParameterValueKey {
             bytes: bytes.to_vec(),
             param_type,
             format,
         };
-        
+
         // Try to get from cache
         if let Ok(cache) = self.cache.read()
-            && let Some(value) = cache.get(&key) {
-                return Ok(value.clone());
-            }
-        
+            && let Some(value) = cache.get(&key)
+        {
+            return Ok(value.clone());
+        }
+
         // Convert and cache
         let value = convert_fn()?;
-        
+
         if let Ok(mut cache) = self.cache.write() {
             // Simple size limit - could be improved with LRU
             if cache.len() < self.max_size {
                 cache.insert(key, value.clone());
             }
         }
-        
+
         Ok(value)
     }
 }
 
 /// Global parameter value cache
-pub static GLOBAL_PARAM_VALUE_CACHE: Lazy<ParameterValueCache> = Lazy::new(|| {
-    ParameterValueCache::new(1000)
-});
+pub static GLOBAL_PARAM_VALUE_CACHE: Lazy<ParameterValueCache> =
+    Lazy::new(|| ParameterValueCache::new(1000));

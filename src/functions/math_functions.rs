@@ -1,6 +1,9 @@
-use rusqlite::{Connection, Result, functions::{FunctionFlags, Context}};
-use tracing::debug;
+use rusqlite::{
+    Connection, Result,
+    functions::{Context, FunctionFlags},
+};
 use rust_decimal::Decimal;
+use tracing::debug;
 
 /// Helper function to get a numeric value from context, handling both numeric and text inputs
 fn get_numeric_value(ctx: &Context<'_>, idx: usize) -> Result<f64> {
@@ -8,9 +11,13 @@ fn get_numeric_value(ctx: &Context<'_>, idx: usize) -> Result<f64> {
         rusqlite::types::ValueRef::Real(f) => Ok(f),
         rusqlite::types::ValueRef::Integer(i) => Ok(i as f64),
         rusqlite::types::ValueRef::Text(s) => {
-            let text = std::str::from_utf8(s).map_err(|e| rusqlite::Error::UserFunctionError(Box::new(e)))?;
-            text.trim().parse::<f64>()
-                .map_err(|e| rusqlite::Error::UserFunctionError(format!("Failed to parse '{text}' as number: {e}").into()))
+            let text = std::str::from_utf8(s)
+                .map_err(|e| rusqlite::Error::UserFunctionError(Box::new(e)))?;
+            text.trim().parse::<f64>().map_err(|e| {
+                rusqlite::Error::UserFunctionError(
+                    format!("Failed to parse '{text}' as number: {e}").into(),
+                )
+            })
         }
         rusqlite::types::ValueRef::Null => {
             // For NULL input, we should propagate it (most SQL functions return NULL for NULL input)
@@ -25,23 +32,23 @@ fn get_numeric_value(ctx: &Context<'_>, idx: usize) -> Result<f64> {
                 // Convert to f64 - note this may lose precision for very large decimals
                 use std::str::FromStr;
                 let decimal_str = decimal.to_string();
-                f64::from_str(&decimal_str)
-                    .map_err(|e| rusqlite::Error::UserFunctionError(
-                        format!("Failed to convert decimal to f64: {e}").into()
-                    ))
+                f64::from_str(&decimal_str).map_err(|e| {
+                    rusqlite::Error::UserFunctionError(
+                        format!("Failed to convert decimal to f64: {e}").into(),
+                    )
+                })
             } else {
                 // Try to parse blob as UTF-8 text as fallback
                 match std::str::from_utf8(b) {
-                    Ok(text) => {
-                        text.trim().parse::<f64>()
-                            .map_err(|e| rusqlite::Error::UserFunctionError(
-                                format!("Failed to parse blob as number: {e}").into()
-                            ))
-                    }
+                    Ok(text) => text.trim().parse::<f64>().map_err(|e| {
+                        rusqlite::Error::UserFunctionError(
+                            format!("Failed to parse blob as number: {e}").into(),
+                        )
+                    }),
                     Err(_) => {
                         let len = b.len();
                         Err(rusqlite::Error::UserFunctionError(
-                            format!("Invalid blob size for numeric function: {len} bytes").into()
+                            format!("Invalid blob size for numeric function: {len} bytes").into(),
                         ))
                     }
                 }
@@ -53,7 +60,7 @@ fn get_numeric_value(ctx: &Context<'_>, idx: usize) -> Result<f64> {
 /// Register all PostgreSQL math functions
 pub fn register_math_functions(conn: &Connection) -> Result<()> {
     debug!("Registering math functions");
-    
+
     // Register trunc function (truncate towards zero)
     conn.create_scalar_function(
         "trunc",
@@ -64,7 +71,7 @@ pub fn register_math_functions(conn: &Connection) -> Result<()> {
             Ok(value.trunc())
         },
     )?;
-    
+
     // Register trunc function with precision
     conn.create_scalar_function(
         "trunc",
@@ -73,7 +80,7 @@ pub fn register_math_functions(conn: &Connection) -> Result<()> {
         |ctx| {
             let value = get_numeric_value(ctx, 0)?;
             let precision = ctx.get::<i64>(1)?;
-            
+
             if precision == 0 {
                 Ok(value.trunc())
             } else {
@@ -82,7 +89,7 @@ pub fn register_math_functions(conn: &Connection) -> Result<()> {
             }
         },
     )?;
-    
+
     // Register round function with precision
     conn.create_scalar_function(
         "round",
@@ -91,7 +98,7 @@ pub fn register_math_functions(conn: &Connection) -> Result<()> {
         |ctx| {
             let value = get_numeric_value(ctx, 0)?;
             let precision = ctx.get::<i64>(1)?;
-            
+
             if precision == 0 {
                 Ok(value.round())
             } else {
@@ -100,7 +107,7 @@ pub fn register_math_functions(conn: &Connection) -> Result<()> {
             }
         },
     )?;
-    
+
     // Register ceil function (ceiling)
     conn.create_scalar_function(
         "ceil",
@@ -111,7 +118,7 @@ pub fn register_math_functions(conn: &Connection) -> Result<()> {
             Ok(value.ceil())
         },
     )?;
-    
+
     // Register ceiling function (alias for ceil)
     conn.create_scalar_function(
         "ceiling",
@@ -122,7 +129,7 @@ pub fn register_math_functions(conn: &Connection) -> Result<()> {
             Ok(value.ceil())
         },
     )?;
-    
+
     // Register floor function
     conn.create_scalar_function(
         "floor",
@@ -133,7 +140,7 @@ pub fn register_math_functions(conn: &Connection) -> Result<()> {
             Ok(value.floor())
         },
     )?;
-    
+
     // Register sign function
     conn.create_scalar_function(
         "sign",
@@ -150,7 +157,7 @@ pub fn register_math_functions(conn: &Connection) -> Result<()> {
             }
         },
     )?;
-    
+
     // Register abs function (absolute value)
     conn.create_scalar_function(
         "abs",
@@ -161,7 +168,7 @@ pub fn register_math_functions(conn: &Connection) -> Result<()> {
             Ok(value.abs())
         },
     )?;
-    
+
     // Register mod function (modulo)
     conn.create_scalar_function(
         "mod",
@@ -170,15 +177,17 @@ pub fn register_math_functions(conn: &Connection) -> Result<()> {
         |ctx| {
             let dividend = ctx.get::<f64>(0)?;
             let divisor = ctx.get::<f64>(1)?;
-            
+
             if divisor == 0.0 {
-                return Err(rusqlite::Error::UserFunctionError("division by zero".into()));
+                return Err(rusqlite::Error::UserFunctionError(
+                    "division by zero".into(),
+                ));
             }
-            
+
             Ok(dividend % divisor)
         },
     )?;
-    
+
     // Register power function
     conn.create_scalar_function(
         "power",
@@ -190,7 +199,7 @@ pub fn register_math_functions(conn: &Connection) -> Result<()> {
             Ok(base.powf(exponent))
         },
     )?;
-    
+
     // Register pow function (alias for power)
     conn.create_scalar_function(
         "pow",
@@ -202,7 +211,7 @@ pub fn register_math_functions(conn: &Connection) -> Result<()> {
             Ok(base.powf(exponent))
         },
     )?;
-    
+
     // Register sqrt function (square root)
     conn.create_scalar_function(
         "sqrt",
@@ -211,12 +220,14 @@ pub fn register_math_functions(conn: &Connection) -> Result<()> {
         |ctx| {
             let value = get_numeric_value(ctx, 0)?;
             if value < 0.0 {
-                return Err(rusqlite::Error::UserFunctionError("square root of negative number".into()));
+                return Err(rusqlite::Error::UserFunctionError(
+                    "square root of negative number".into(),
+                ));
             }
             Ok(value.sqrt())
         },
     )?;
-    
+
     // Register exp function (e^x)
     conn.create_scalar_function(
         "exp",
@@ -227,7 +238,7 @@ pub fn register_math_functions(conn: &Connection) -> Result<()> {
             Ok(value.exp())
         },
     )?;
-    
+
     // Register ln function (natural logarithm)
     conn.create_scalar_function(
         "ln",
@@ -236,12 +247,14 @@ pub fn register_math_functions(conn: &Connection) -> Result<()> {
         |ctx| {
             let value = get_numeric_value(ctx, 0)?;
             if value <= 0.0 {
-                return Err(rusqlite::Error::UserFunctionError("logarithm of non-positive number".into()));
+                return Err(rusqlite::Error::UserFunctionError(
+                    "logarithm of non-positive number".into(),
+                ));
             }
             Ok(value.ln())
         },
     )?;
-    
+
     // Register log function (base 10 logarithm)
     conn.create_scalar_function(
         "log",
@@ -250,12 +263,14 @@ pub fn register_math_functions(conn: &Connection) -> Result<()> {
         |ctx| {
             let value = get_numeric_value(ctx, 0)?;
             if value <= 0.0 {
-                return Err(rusqlite::Error::UserFunctionError("logarithm of non-positive number".into()));
+                return Err(rusqlite::Error::UserFunctionError(
+                    "logarithm of non-positive number".into(),
+                ));
             }
             Ok(value.log10())
         },
     )?;
-    
+
     // Register log function with custom base
     conn.create_scalar_function(
         "log",
@@ -264,20 +279,24 @@ pub fn register_math_functions(conn: &Connection) -> Result<()> {
         |ctx| {
             let base = get_numeric_value(ctx, 0)?;
             let value = get_numeric_value(ctx, 1)?;
-            
+
             if base <= 0.0 || base == 1.0 {
-                return Err(rusqlite::Error::UserFunctionError("invalid logarithm base".into()));
+                return Err(rusqlite::Error::UserFunctionError(
+                    "invalid logarithm base".into(),
+                ));
             }
             if value <= 0.0 {
-                return Err(rusqlite::Error::UserFunctionError("logarithm of non-positive number".into()));
+                return Err(rusqlite::Error::UserFunctionError(
+                    "logarithm of non-positive number".into(),
+                ));
             }
-            
+
             Ok(value.log(base))
         },
     )?;
-    
+
     // Register trigonometric functions
-    
+
     // sin function
     conn.create_scalar_function(
         "sin",
@@ -288,7 +307,7 @@ pub fn register_math_functions(conn: &Connection) -> Result<()> {
             Ok(value.sin())
         },
     )?;
-    
+
     // cos function
     conn.create_scalar_function(
         "cos",
@@ -299,7 +318,7 @@ pub fn register_math_functions(conn: &Connection) -> Result<()> {
             Ok(value.cos())
         },
     )?;
-    
+
     // tan function
     conn.create_scalar_function(
         "tan",
@@ -310,7 +329,7 @@ pub fn register_math_functions(conn: &Connection) -> Result<()> {
             Ok(value.tan())
         },
     )?;
-    
+
     // asin function (inverse sine)
     conn.create_scalar_function(
         "asin",
@@ -319,12 +338,14 @@ pub fn register_math_functions(conn: &Connection) -> Result<()> {
         |ctx| {
             let value = ctx.get::<f64>(0)?;
             if !(-1.0..=1.0).contains(&value) {
-                return Err(rusqlite::Error::UserFunctionError("asin domain error".into()));
+                return Err(rusqlite::Error::UserFunctionError(
+                    "asin domain error".into(),
+                ));
             }
             Ok(value.asin())
         },
     )?;
-    
+
     // acos function (inverse cosine)
     conn.create_scalar_function(
         "acos",
@@ -333,12 +354,14 @@ pub fn register_math_functions(conn: &Connection) -> Result<()> {
         |ctx| {
             let value = ctx.get::<f64>(0)?;
             if !(-1.0..=1.0).contains(&value) {
-                return Err(rusqlite::Error::UserFunctionError("acos domain error".into()));
+                return Err(rusqlite::Error::UserFunctionError(
+                    "acos domain error".into(),
+                ));
             }
             Ok(value.acos())
         },
     )?;
-    
+
     // atan function (inverse tangent)
     conn.create_scalar_function(
         "atan",
@@ -349,7 +372,7 @@ pub fn register_math_functions(conn: &Connection) -> Result<()> {
             Ok(value.atan())
         },
     )?;
-    
+
     // atan2 function (two-argument arctangent)
     conn.create_scalar_function(
         "atan2",
@@ -361,7 +384,7 @@ pub fn register_math_functions(conn: &Connection) -> Result<()> {
             Ok(y.atan2(x))
         },
     )?;
-    
+
     // Register radians function (degrees to radians)
     conn.create_scalar_function(
         "radians",
@@ -372,7 +395,7 @@ pub fn register_math_functions(conn: &Connection) -> Result<()> {
             Ok(degrees.to_radians())
         },
     )?;
-    
+
     // Register degrees function (radians to degrees)
     conn.create_scalar_function(
         "degrees",
@@ -383,29 +406,22 @@ pub fn register_math_functions(conn: &Connection) -> Result<()> {
             Ok(radians.to_degrees())
         },
     )?;
-    
+
     // Register pi function
     conn.create_scalar_function(
         "pi",
         0,
         FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
-        |_ctx| {
-            Ok(std::f64::consts::PI)
-        },
+        |_ctx| Ok(std::f64::consts::PI),
     )?;
-    
+
     // Register random function (0.0 to 1.0)
-    conn.create_scalar_function(
-        "random",
-        0,
-        FunctionFlags::SQLITE_UTF8,
-        |_ctx| {
-            use rand::Rng;
-            let mut rng = rand::rng();
-            Ok(rng.random::<f64>())
-        },
-    )?;
-    
+    conn.create_scalar_function("random", 0, FunctionFlags::SQLITE_UTF8, |_ctx| {
+        use rand::Rng;
+        let mut rng = rand::rng();
+        Ok(rng.random::<f64>())
+    })?;
+
     debug!("Successfully registered math functions");
     Ok(())
 }
@@ -414,185 +430,149 @@ pub fn register_math_functions(conn: &Connection) -> Result<()> {
 mod tests {
     use super::*;
     use rusqlite::Connection;
-    
+
     #[test]
     fn test_trunc() {
         let conn = Connection::open_in_memory().unwrap();
         register_math_functions(&conn).unwrap();
-        
-        let result: f64 = conn.query_row(
-            "SELECT trunc(3.7)",
-            [],
-            |row| row.get(0)
-        ).unwrap();
+
+        let result: f64 = conn
+            .query_row("SELECT trunc(3.7)", [], |row| row.get(0))
+            .unwrap();
         assert_eq!(result, 3.0);
-        
-        let result: f64 = conn.query_row(
-            "SELECT trunc(-3.7)",
-            [],
-            |row| row.get(0)
-        ).unwrap();
+
+        let result: f64 = conn
+            .query_row("SELECT trunc(-3.7)", [], |row| row.get(0))
+            .unwrap();
         assert_eq!(result, -3.0);
-        
+
         // Test with precision
-        let result: f64 = conn.query_row(
-            "SELECT trunc(3.789, 2)",
-            [],
-            |row| row.get(0)
-        ).unwrap();
+        let result: f64 = conn
+            .query_row("SELECT trunc(3.789, 2)", [], |row| row.get(0))
+            .unwrap();
         assert_eq!(result, 3.78);
     }
-    
+
     #[test]
     fn test_round_with_precision() {
         let conn = Connection::open_in_memory().unwrap();
         register_math_functions(&conn).unwrap();
-        
-        let result: f64 = conn.query_row(
-            "SELECT round(3.789, 2)",
-            [],
-            |row| row.get(0)
-        ).unwrap();
+
+        let result: f64 = conn
+            .query_row("SELECT round(3.789, 2)", [], |row| row.get(0))
+            .unwrap();
         assert_eq!(result, 3.79);
-        
-        let result: f64 = conn.query_row(
-            "SELECT round(3.784, 2)",
-            [],
-            |row| row.get(0)
-        ).unwrap();
+
+        let result: f64 = conn
+            .query_row("SELECT round(3.784, 2)", [], |row| row.get(0))
+            .unwrap();
         assert_eq!(result, 3.78);
     }
-    
+
     #[test]
     fn test_ceil_floor() {
         let conn = Connection::open_in_memory().unwrap();
         register_math_functions(&conn).unwrap();
-        
-        let result: f64 = conn.query_row(
-            "SELECT ceil(3.2)",
-            [],
-            |row| row.get(0)
-        ).unwrap();
+
+        let result: f64 = conn
+            .query_row("SELECT ceil(3.2)", [], |row| row.get(0))
+            .unwrap();
         assert_eq!(result, 4.0);
-        
-        let result: f64 = conn.query_row(
-            "SELECT floor(3.7)",
-            [],
-            |row| row.get(0)
-        ).unwrap();
+
+        let result: f64 = conn
+            .query_row("SELECT floor(3.7)", [], |row| row.get(0))
+            .unwrap();
         assert_eq!(result, 3.0);
     }
-    
+
     #[test]
     fn test_sign() {
         let conn = Connection::open_in_memory().unwrap();
         register_math_functions(&conn).unwrap();
-        
-        let result: f64 = conn.query_row(
-            "SELECT sign(5.5)",
-            [],
-            |row| row.get(0)
-        ).unwrap();
+
+        let result: f64 = conn
+            .query_row("SELECT sign(5.5)", [], |row| row.get(0))
+            .unwrap();
         assert_eq!(result, 1.0);
-        
-        let result: f64 = conn.query_row(
-            "SELECT sign(-3.2)",
-            [],
-            |row| row.get(0)
-        ).unwrap();
+
+        let result: f64 = conn
+            .query_row("SELECT sign(-3.2)", [], |row| row.get(0))
+            .unwrap();
         assert_eq!(result, -1.0);
-        
-        let result: f64 = conn.query_row(
-            "SELECT sign(0.0)",
-            [],
-            |row| row.get(0)
-        ).unwrap();
+
+        let result: f64 = conn
+            .query_row("SELECT sign(0.0)", [], |row| row.get(0))
+            .unwrap();
         assert_eq!(result, 0.0);
     }
-    
+
     #[test]
     fn test_power_sqrt() {
         let conn = Connection::open_in_memory().unwrap();
         register_math_functions(&conn).unwrap();
-        
-        let result: f64 = conn.query_row(
-            "SELECT power(2, 3)",
-            [],
-            |row| row.get(0)
-        ).unwrap();
+
+        let result: f64 = conn
+            .query_row("SELECT power(2, 3)", [], |row| row.get(0))
+            .unwrap();
         assert_eq!(result, 8.0);
-        
-        let result: f64 = conn.query_row(
-            "SELECT sqrt(16)",
-            [],
-            |row| row.get(0)
-        ).unwrap();
+
+        let result: f64 = conn
+            .query_row("SELECT sqrt(16)", [], |row| row.get(0))
+            .unwrap();
         assert_eq!(result, 4.0);
     }
-    
+
     #[test]
     fn test_trigonometric() {
         let conn = Connection::open_in_memory().unwrap();
         register_math_functions(&conn).unwrap();
-        
+
         // Test sin(pi/2) = 1
-        let result: f64 = conn.query_row(
-            "SELECT sin(pi() / 2)",
-            [],
-            |row| row.get(0)
-        ).unwrap();
+        let result: f64 = conn
+            .query_row("SELECT sin(pi() / 2)", [], |row| row.get(0))
+            .unwrap();
         assert!((result - 1.0).abs() < 1e-10);
-        
+
         // Test cos(0) = 1
-        let result: f64 = conn.query_row(
-            "SELECT cos(0)",
-            [],
-            |row| row.get(0)
-        ).unwrap();
+        let result: f64 = conn
+            .query_row("SELECT cos(0)", [], |row| row.get(0))
+            .unwrap();
         assert_eq!(result, 1.0);
     }
-    
+
     #[test]
     fn test_logarithms() {
         let conn = Connection::open_in_memory().unwrap();
         register_math_functions(&conn).unwrap();
-        
+
         // Test ln(e) = 1
-        let result: f64 = conn.query_row(
-            "SELECT ln(exp(1))",
-            [],
-            |row| row.get(0)
-        ).unwrap();
+        let result: f64 = conn
+            .query_row("SELECT ln(exp(1))", [], |row| row.get(0))
+            .unwrap();
         assert!((result - 1.0).abs() < 1e-10);
-        
+
         // Test log base 10
-        let result: f64 = conn.query_row(
-            "SELECT log(100)",
-            [],
-            |row| row.get(0)
-        ).unwrap();
+        let result: f64 = conn
+            .query_row("SELECT log(100)", [], |row| row.get(0))
+            .unwrap();
         assert_eq!(result, 2.0);
     }
-    
+
     #[test]
     fn test_angle_conversion() {
         let conn = Connection::open_in_memory().unwrap();
         register_math_functions(&conn).unwrap();
-        
+
         // Test radians(180) = pi
-        let result: f64 = conn.query_row(
-            "SELECT radians(180)",
-            [],
-            |row| row.get(0)
-        ).unwrap();
+        let result: f64 = conn
+            .query_row("SELECT radians(180)", [], |row| row.get(0))
+            .unwrap();
         assert!((result - std::f64::consts::PI).abs() < 1e-10);
-        
+
         // Test degrees(pi) = 180
-        let result: f64 = conn.query_row(
-            "SELECT degrees(pi())",
-            [],
-            |row| row.get(0)
-        ).unwrap();
+        let result: f64 = conn
+            .query_row("SELECT degrees(pi())", [], |row| row.get(0))
+            .unwrap();
         assert!((result - 180.0).abs() < 1e-10);
     }
 }

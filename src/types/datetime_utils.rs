@@ -232,7 +232,7 @@ pub fn format_microseconds_to_timestamp(micros: i64) -> String {
     }
 }
 
-/// Optimized format microseconds since epoch into a buffer  
+/// Optimized format microseconds since epoch into a buffer
 /// Returns the number of bytes written
 pub fn format_microseconds_to_timestamp_buf(micros: i64, buf: &mut [u8]) -> usize {
     // Handle special values

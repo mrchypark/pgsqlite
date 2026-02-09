@@ -1,9 +1,9 @@
+use super::QueryFingerprint;
+use crate::types::type_mapper::PgType;
+use sqlparser::ast::Statement;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
-use sqlparser::ast::Statement;
-use crate::types::type_mapper::PgType;
-use super::QueryFingerprint;
 
 /// Represents a cached parsed query with full analysis results
 #[derive(Clone)]
@@ -58,9 +58,9 @@ impl QueryCache {
         let fingerprint = QueryFingerprint::generate(query_text);
         let mut cache = self.cache.write().unwrap();
         let mut metrics = self.metrics.write().unwrap();
-        
+
         metrics.total_queries += 1;
-        
+
         if let Some(entry) = cache.get_mut(&fingerprint) {
             if entry.last_accessed.elapsed() < self.ttl {
                 entry.access_count += 1;
@@ -72,7 +72,7 @@ impl QueryCache {
             cache.remove(&fingerprint);
             metrics.evictions += 1;
         }
-        
+
         metrics.cache_misses += 1;
         None
     }
@@ -82,22 +82,27 @@ impl QueryCache {
         let fingerprint = QueryFingerprint::generate(&query_text);
         let mut cache = self.cache.write().unwrap();
         let mut metrics = self.metrics.write().unwrap();
-        
+
         // LRU eviction: remove least recently used entry if at capacity
-        if cache.len() >= self.capacity && !cache.contains_key(&fingerprint)
-            && let Some((key_to_remove, _)) = cache.iter()
-                .min_by_key(|(_, entry)| entry.last_accessed) {
-                let key_to_remove = *key_to_remove;
-                cache.remove(&key_to_remove);
-                metrics.evictions += 1;
-            }
-        
-        cache.insert(fingerprint, CacheEntry {
-            query,
-            last_accessed: Instant::now(),
-            access_count: 1,
-            hit_count: 0,
-        });
+        if cache.len() >= self.capacity
+            && !cache.contains_key(&fingerprint)
+            && let Some((key_to_remove, _)) =
+                cache.iter().min_by_key(|(_, entry)| entry.last_accessed)
+        {
+            let key_to_remove = *key_to_remove;
+            cache.remove(&key_to_remove);
+            metrics.evictions += 1;
+        }
+
+        cache.insert(
+            fingerprint,
+            CacheEntry {
+                query,
+                last_accessed: Instant::now(),
+                access_count: 1,
+                hit_count: 0,
+            },
+        );
     }
 
     /// Invalidate cache entries for a specific table
@@ -105,10 +110,13 @@ impl QueryCache {
         let mut cache = self.cache.write().unwrap();
         let mut metrics = self.metrics.write().unwrap();
         let table_lower = table_name.to_lowercase();
-        
+
         let before_size = cache.len();
         cache.retain(|_, entry| {
-            !entry.query.table_names.iter()
+            !entry
+                .query
+                .table_names
+                .iter()
                 .any(|t| t.to_lowercase() == table_lower)
         });
         let removed = before_size - cache.len();
@@ -127,9 +135,7 @@ impl QueryCache {
     /// Get cache statistics
     pub fn stats(&self) -> (usize, u64) {
         let cache = self.cache.read().unwrap();
-        let total_accesses: u64 = cache.values()
-            .map(|entry| entry.access_count)
-            .sum();
+        let total_accesses: u64 = cache.values().map(|entry| entry.access_count).sum();
         (cache.len(), total_accesses)
     }
 
@@ -145,7 +151,7 @@ impl QueryCache {
         let mut in_string = false;
         let mut string_delimiter = '\0';
         let chars = query.chars().peekable();
-        
+
         for ch in chars {
             match ch {
                 '\'' | '"' if !in_string => {
@@ -171,7 +177,7 @@ impl QueryCache {
                 ch => normalized.push(ch),
             }
         }
-        
+
         normalized.trim().to_string()
     }
 }

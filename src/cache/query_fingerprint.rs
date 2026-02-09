@@ -1,5 +1,5 @@
-use std::hash::{Hash, Hasher};
 use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 
 /// Query fingerprinting for better cache keys
 /// Normalizes queries to increase cache hit rates
@@ -18,7 +18,7 @@ impl QueryFingerprint {
         normalized.hash(&mut hasher);
         hasher.finish()
     }
-    
+
     /// Generate a fingerprint that preserves literals (for translation cache)
     #[inline]
     pub fn generate_with_literals(query: &str) -> u64 {
@@ -27,14 +27,14 @@ impl QueryFingerprint {
         normalized.hash(&mut hasher);
         hasher.finish()
     }
-    
+
     /// Normalize a query for fingerprinting
     fn normalize_query(query: &str) -> String {
         let mut result = String::with_capacity(query.len());
         let mut chars = query.chars().peekable();
         let in_string = false;
         let mut after_whitespace = false;
-        
+
         while let Some(ch) = chars.next() {
             match ch {
                 // Handle string literals
@@ -51,13 +51,13 @@ impl QueryFingerprint {
                         }
                     }
                 }
-                
+
                 // Handle numbers (but only standalone numbers, not parts of identifiers)
                 '0'..='9' if !in_string => {
                     // Check if this is part of an identifier by looking at what came before
                     let last_char = result.chars().last();
                     let is_identifier = matches!(last_char, Some('A'..='Z') | Some('_'));
-                    
+
                     if is_identifier {
                         // Part of identifier, keep as-is
                         after_whitespace = false;
@@ -75,7 +75,7 @@ impl QueryFingerprint {
                         }
                     }
                 }
-                
+
                 // Handle whitespace
                 ' ' | '\t' | '\n' | '\r' => {
                     if !after_whitespace && !result.is_empty() {
@@ -83,28 +83,28 @@ impl QueryFingerprint {
                         after_whitespace = true;
                     }
                 }
-                
+
                 // Handle other characters
                 _ if !in_string => {
                     after_whitespace = false;
                     result.push(ch.to_ascii_uppercase());
                 }
-                
+
                 _ => {}
             }
         }
-        
+
         // Trim trailing whitespace
         result.trim_end().to_string()
     }
-    
+
     /// Normalize only whitespace and case (preserves literals)
     fn normalize_whitespace_and_case(query: &str) -> String {
         let mut result = String::with_capacity(query.len());
         let chars = query.chars();
         let mut in_string = false;
         let mut after_whitespace = false;
-        
+
         for ch in chars {
             match ch {
                 '\'' => {
@@ -112,14 +112,14 @@ impl QueryFingerprint {
                     result.push(ch);
                     after_whitespace = false;
                 }
-                
+
                 ' ' | '\t' | '\n' | '\r' if !in_string => {
                     if !after_whitespace && !result.is_empty() {
                         result.push(' ');
                         after_whitespace = true;
                     }
                 }
-                
+
                 _ => {
                     after_whitespace = false;
                     if in_string {
@@ -130,7 +130,7 @@ impl QueryFingerprint {
                 }
             }
         }
-        
+
         result.trim_end().to_string()
     }
 }
@@ -138,13 +138,13 @@ impl QueryFingerprint {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_fingerprint_whitespace_normalization() {
         let q1 = "SELECT  *  FROM   users";
         let q2 = "SELECT * FROM users";
         let q3 = "SELECT\n*\nFROM\nusers";
-        
+
         assert_eq!(
             QueryFingerprint::generate(q1),
             QueryFingerprint::generate(q2)
@@ -154,13 +154,13 @@ mod tests {
             QueryFingerprint::generate(q3)
         );
     }
-    
+
     #[test]
     fn test_fingerprint_case_normalization() {
         let q1 = "select * from users";
         let q2 = "SELECT * FROM users";
         let q3 = "SeLeCt * FrOm users";
-        
+
         assert_eq!(
             QueryFingerprint::generate(q1),
             QueryFingerprint::generate(q2)
@@ -170,44 +170,44 @@ mod tests {
             QueryFingerprint::generate(q3)
         );
     }
-    
+
     #[test]
     fn test_fingerprint_literal_normalization() {
         let q1 = "SELECT * FROM users WHERE id = 123";
         let q2 = "SELECT * FROM users WHERE id = 456";
         let q3 = "SELECT * FROM users WHERE name = 'john'";
         let q4 = "SELECT * FROM users WHERE name = 'jane'";
-        
+
         // Numeric literals should be normalized
         assert_eq!(
             QueryFingerprint::generate(q1),
             QueryFingerprint::generate(q2)
         );
-        
+
         // String literals should be normalized
         assert_eq!(
             QueryFingerprint::generate(q3),
             QueryFingerprint::generate(q4)
         );
-        
+
         // But different structure should have different fingerprints
         assert_ne!(
             QueryFingerprint::generate(q1),
             QueryFingerprint::generate(q3)
         );
     }
-    
+
     #[test]
     fn test_fingerprint_with_literals_preserved() {
         let q1 = "SELECT * FROM users WHERE id = 123";
         let q2 = "SELECT * FROM users WHERE id = 456";
-        
+
         // With literals preserved, these should be different
         assert_ne!(
             QueryFingerprint::generate_with_literals(q1),
             QueryFingerprint::generate_with_literals(q2)
         );
-        
+
         // But whitespace/case should still be normalized
         let q3 = "SELECT  *  FROM  users  WHERE  id  =  123";
         assert_eq!(

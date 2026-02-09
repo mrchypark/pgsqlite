@@ -1,5 +1,5 @@
 use once_cell::sync::Lazy;
-use rusqlite::{functions::FunctionFlags, Connection, Result};
+use rusqlite::{Connection, Result, functions::FunctionFlags};
 use tracing::debug;
 use unicode_normalization::UnicodeNormalization;
 
@@ -269,25 +269,26 @@ pub fn register_string_functions(conn: &Connection) -> Result<()> {
 static UNACCENT_RULES: Lazy<Vec<(String, String)>> = Lazy::new(|| {
     let mut rules = Vec::new();
     if let Ok(path) = std::env::var("PGSQLITE_UNACCENT_RULES_PATH")
-        && let Ok(contents) = std::fs::read_to_string(path) {
-            for line in contents.lines() {
-                let l = line.trim();
-                if l.is_empty() || l.starts_with('#') {
-                    continue;
-                }
-                let parts: Vec<&str> = l.split_whitespace().collect();
-                if parts.is_empty() {
-                    continue;
-                }
-                let from = parts[0].to_string();
-                let to = if parts.len() >= 2 {
-                    parts[1].to_string()
-                } else {
-                    "".to_string()
-                };
-                rules.push((from, to));
+        && let Ok(contents) = std::fs::read_to_string(path)
+    {
+        for line in contents.lines() {
+            let l = line.trim();
+            if l.is_empty() || l.starts_with('#') {
+                continue;
             }
+            let parts: Vec<&str> = l.split_whitespace().collect();
+            if parts.is_empty() {
+                continue;
+            }
+            let from = parts[0].to_string();
+            let to = if parts.len() >= 2 {
+                parts[1].to_string()
+            } else {
+                "".to_string()
+            };
+            rules.push((from, to));
         }
+    }
     rules
 });
 

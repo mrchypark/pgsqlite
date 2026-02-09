@@ -1,18 +1,18 @@
 // Module for PostgreSQL function implementations
-pub mod uuid_functions;
-pub mod json_functions;
-pub mod decimal_functions;
-pub mod datetime_functions;
-pub mod regex_functions;
-pub mod catalog_functions;
-pub mod hash_functions;
 pub mod array_functions;
-pub mod unnest_vtab;
-pub mod string_functions;
-pub mod math_functions;
-pub mod system_functions;
-pub mod fts_functions;
+pub mod catalog_functions;
 pub mod comment_functions;
+pub mod datetime_functions;
+pub mod decimal_functions;
+pub mod fts_functions;
+pub mod hash_functions;
+pub mod json_functions;
+pub mod math_functions;
+pub mod regex_functions;
+pub mod string_functions;
+pub mod system_functions;
+pub mod unnest_vtab;
+pub mod uuid_functions;
 
 use rusqlite::{Connection, Result};
 

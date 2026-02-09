@@ -34,14 +34,21 @@ async fn debug_pg_constraint() {
     let client = &server.client;
 
     // Debug: Check what constraints we actually get
-    let rows = client.query("SELECT * FROM pg_constraint", &[]).await.unwrap();
+    let rows = client
+        .query("SELECT * FROM pg_constraint", &[])
+        .await
+        .unwrap();
 
     println!("Total constraints found: {}", rows.len());
-    println!("Columns per row: {}", if !rows.is_empty() { rows[0].len() } else { 0 });
+    println!(
+        "Columns per row: {}",
+        if !rows.is_empty() { rows[0].len() } else { 0 }
+    );
 
     for (i, row) in rows.iter().enumerate() {
         println!("Constraint {}: {} columns", i, row.len());
-        for j in 0..row.len().min(10) { // Only show first 10 columns
+        for j in 0..row.len().min(10) {
+            // Only show first 10 columns
             if let Ok(val) = row.try_get::<_, Option<String>>(j) {
                 println!("  Column {}: {:?}", j, val);
             } else if let Ok(val) = row.try_get::<_, String>(j) {

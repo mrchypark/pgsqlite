@@ -136,7 +136,9 @@ impl QueryRouter {
                         for i in 0..column_names.len() {
                             let value = match row.get::<_, rusqlite::types::Value>(i)? {
                                 rusqlite::types::Value::Null => None,
-                                rusqlite::types::Value::Integer(i) => Some(i.to_string().into_bytes()),
+                                rusqlite::types::Value::Integer(i) => {
+                                    Some(i.to_string().into_bytes())
+                                }
                                 rusqlite::types::Value::Real(f) => Some(f.to_string().into_bytes()),
                                 rusqlite::types::Value::Text(s) => Some(s.into_bytes()),
                                 rusqlite::types::Value::Blob(b) => Some(b),

@@ -194,7 +194,7 @@ impl QueryAnalyzer {
 
             if let Some(pos) = from_pos {
                 let select_clause = &query[6..pos]; // Skip "SELECT"
-                                                    // Check for arithmetic operators but exclude "SELECT *" pattern
+                // Check for arithmetic operators but exclude "SELECT *" pattern
                 if select_clause.contains('+')
                     || select_clause.contains('-')
                     || (select_clause.contains('*') && !select_clause.trim().starts_with('*'))
