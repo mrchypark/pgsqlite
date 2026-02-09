@@ -207,8 +207,8 @@ impl SqlitePool {
                     );
                     to_remove.push(i);
                     stats.connections_dropped += 1;
-                    stats.total_connections -= 1;
-                    stats.idle_connections -= 1;
+                    stats.total_connections = stats.total_connections.saturating_sub(1);
+                    stats.idle_connections = stats.idle_connections.saturating_sub(1);
                     continue;
                 }
 
@@ -231,8 +231,8 @@ impl SqlitePool {
                                 );
                                 to_remove.push(i);
                                 stats.connections_dropped += 1;
-                                stats.total_connections -= 1;
-                                stats.idle_connections -= 1;
+                                stats.total_connections = stats.total_connections.saturating_sub(1);
+                                stats.idle_connections = stats.idle_connections.saturating_sub(1);
                             }
                         }
                     }
@@ -282,14 +282,11 @@ impl SqlitePool {
             match conns.pop() {
                 Some(mut pc) => {
                     pc.touch(); // Update last_used timestamp
-                    stats.idle_connections -= 1;
+                    stats.idle_connections = stats.idle_connections.saturating_sub(1);
                     stats.active_connections += 1;
                     Some(pc)
                 }
-                None => {
-                    stats.active_connections += 1;
-                    None
-                }
+                None => None,
             }
         };
 
@@ -301,6 +298,7 @@ impl SqlitePool {
                 let mut stats = self.stats.lock();
                 stats.connections_created += 1;
                 stats.total_connections += 1;
+                stats.active_connections += 1;
                 new_conn
             }
         };
