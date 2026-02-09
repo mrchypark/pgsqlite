@@ -28,6 +28,20 @@ pgsqlite can be configured through:
 | Auth Mode | `--auth` | `PGSQLITE_AUTH` | `trust` | Authentication mode (`trust`, `password`) |
 | Password | `--password` | `PGSQLITE_PASSWORD` | None | Password for `--auth password` (cleartext password auth) |
 | Insecure Allow Remote Trust | `--insecure-allow-remote-trust` | `PGSQLITE_INSECURE_ALLOW_REMOTE_TRUST` | `false` | Allow non-loopback listen address with `--auth trust` (INSECURE) |
+| Max Connections | `--max-connections` | `PGSQLITE_MAX_CONNECTIONS` | `100` | Maximum number of concurrent connections allowed |
+
+### Connection Pooling
+
+Connection pooling is optional and can be enabled to improve concurrency for read-heavy workloads.
+
+| Option | CLI Flag | Environment Variable | Default | Description |
+|--------|----------|---------------------|---------|-------------|
+| Enable Pooling | `--use-pooling` | `PGSQLITE_USE_POOLING` | `false` | Enable connection pooling with read/write separation |
+| Pool Size | `--pool-size` | `PGSQLITE_POOL_SIZE` | `8` | Number of connections in the read-only connection pool |
+| Pool Connection Timeout | `--pool-connection-timeout-seconds` | `PGSQLITE_POOL_CONNECTION_TIMEOUT_SECONDS` | `30` | Timeout for getting a connection from the pool (seconds) |
+| Pool Idle Timeout | `--pool-idle-timeout-seconds` | `PGSQLITE_POOL_IDLE_TIMEOUT_SECONDS` | `300` | Timeout for idle connections in the pool (seconds) |
+| Pool Health Check Interval | `--pool-health-check-interval-seconds` | `PGSQLITE_POOL_HEALTH_CHECK_INTERVAL_SECONDS` | `60` | Interval for connection health checks (seconds) |
+| Pool Max Retries | `--pool-max-retries` | `PGSQLITE_POOL_MAX_RETRIES` | `3` | Maximum number of retries for failed connections |
 
 ### SSL/TLS Configuration
 
@@ -36,7 +50,7 @@ pgsqlite can be configured through:
 | SSL Enabled | `--ssl` | `PGSQLITE_SSL` | `false` | Enable SSL/TLS support (TCP only) |
 | SSL Certificate | `--ssl-cert` | `PGSQLITE_SSL_CERT` | Auto-generated | Path to SSL certificate file |
 | SSL Key | `--ssl-key` | `PGSQLITE_SSL_KEY` | Auto-generated | Path to SSL private key file |
-| SSL CA | `--ssl-ca` | `PGSQLITE_SSL_CA` | None | Path to CA certificate file (optional) |
+| SSL CA | `--ssl-ca` | `PGSQLITE_SSL_CA` | None | Path to CA certificate file (currently unused; reserved for future client verification support) |
 | SSL Ephemeral | `--ssl-ephemeral` | `PGSQLITE_SSL_EPHEMERAL` | `false` | Generate ephemeral certificates on startup |
 
 ## Performance Configuration
@@ -156,9 +170,11 @@ export PGSQLITE_STATEMENT_POOL_SIZE=200
 pgsqlite
 ```
 
-### Configuration File (.env)
+### Environment File (.env)
 
-Create a `.env` file in your working directory:
+pgsqlite reads configuration from CLI args and process environment variables. It does not automatically load `.env` files on its own.
+
+You can still keep settings in a `.env` file and load them with your shell (or use tools like `direnv` / Docker Compose):
 
 ```bash
 # Server settings
@@ -180,6 +196,16 @@ PGSQLITE_SSL_KEY=./certs/server.key
 # Monitoring
 PGSQLITE_BUFFER_MONITORING=1
 PGSQLITE_MEMORY_MONITORING=1
+```
+
+Load and run:
+
+```bash
+set -a
+source .env
+set +a
+
+pgsqlite
 ```
 
 ## Performance Profiles
