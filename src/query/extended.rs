@@ -1890,11 +1890,14 @@ impl ExtendedQueryHandler {
             )
         };
 
-        // Special logging for orders queries
-        if query.contains("orders") && query.contains("customer_id") {
-            info!("EXECUTE: Orders query detected!");
-            info!("EXECUTE: Query: {}", query);
-            info!("EXECUTE: Statement name: {}", statement_name);
+        // Optional, opt-in debug logging for diagnosing statement/RowDescription issues.
+        if std::env::var("PGSQLITE_DEBUG_EXECUTE").ok().as_deref() == Some("1")
+            && query.contains("orders")
+            && query.contains("customer_id")
+        {
+            debug!("EXECUTE: Orders query detected");
+            debug!("EXECUTE: Query: {}", query);
+            debug!("EXECUTE: Statement name: {}", statement_name);
 
             // Check what field_descriptions are stored for this statement
             let statements = session.prepared_statements.read().await;
@@ -1909,18 +1912,18 @@ impl ExtendedQueryHandler {
             };
 
             if let Some(stmt) = stmt_opt {
-                info!(
+                debug!(
                     "EXECUTE: Statement has {} field_descriptions",
                     stmt.field_descriptions.len()
                 );
                 for fd in &stmt.field_descriptions {
-                    info!("EXECUTE:   {} -> type OID {}", fd.name, fd.type_oid);
+                    debug!("EXECUTE:   {} -> type OID {}", fd.name, fd.type_oid);
                     if fd.name.contains("total_amount") && fd.type_oid == 25 {
-                        info!("EXECUTE:   ^^^ BUG DETECTED: total_amount has TEXT type!");
+                        debug!("EXECUTE:   ^^^ BUG DETECTED: total_amount has TEXT type!");
                     }
                 }
             } else {
-                info!(
+                debug!(
                     "EXECUTE: Statement not found! Available keys: {:?}",
                     statements.keys().collect::<Vec<_>>()
                 );
@@ -1947,16 +1950,21 @@ impl ExtendedQueryHandler {
         } else {
             let statements = session.prepared_statements.read().await;
             // Handle unnamed statements properly
-            let stmt = if statement_name.is_empty() {
+            let stmt_opt = if statement_name.is_empty() {
                 statements
                     .get("")
                     .or_else(|| statements.get(&statement_name))
-                    .expect("Statement should exist")
             } else {
-                statements
-                    .get(&statement_name)
-                    .expect("Statement should exist")
+                statements.get(&statement_name)
             };
+            let stmt = stmt_opt.ok_or_else(|| {
+                let label = if statement_name.is_empty() {
+                    "<unnamed>"
+                } else {
+                    statement_name.as_str()
+                };
+                PgSqliteError::Protocol(format!("Unknown prepared statement: {label}"))
+            })?;
             stmt.param_types.clone()
         };
 
@@ -1979,17 +1987,17 @@ impl ExtendedQueryHandler {
 
         let should_intercept_query = CatalogInterceptor::should_intercept_query(&query);
 
-        if query_starts_with_ignore_case(&query, "SELECT") &&
-           !query.contains("JOIN") &&
-           !query.contains("GROUP BY") &&
-           !query.contains("HAVING") &&
-           !has_non_param_cast &&  // Allow parameter casts like $1::INTEGER
-           !query.contains("UNION") &&
-           !query.contains("INTERSECT") &&
-           !query.contains("EXCEPT") &&
-           !query.to_lowercase().contains("unnest(") &&
-           !should_intercept_query &&
-           (result_formats.is_empty() || result_formats[0] == 0)
+        if query_starts_with_ignore_case(&query, "SELECT")
+            && find_keyword_position(&query, "JOIN").is_none()
+            && find_keyword_position(&query, "GROUP BY").is_none()
+            && find_keyword_position(&query, "HAVING").is_none()
+            && !has_non_param_cast // Allow parameter casts like $1::INTEGER
+            && find_keyword_position(&query, "UNION").is_none()
+            && find_keyword_position(&query, "INTERSECT").is_none()
+            && find_keyword_position(&query, "EXCEPT").is_none()
+            && !query.to_lowercase().contains("unnest(")
+            && !should_intercept_query
+            && (result_formats.is_empty() || result_formats[0] == 0)
         {
             info!("🚀 Ultra-fast path triggered for query: {}", query);
             // Using fast path for simple SELECT

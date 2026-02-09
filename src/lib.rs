@@ -1,24 +1,24 @@
+pub mod cache;
+pub mod catalog;
+pub mod config;
+pub mod ddl;
+pub mod error;
+pub mod functions;
+pub mod metadata;
+pub mod migration;
+pub mod optimization;
 pub mod protocol;
+pub mod query;
+pub mod rewriter;
+pub mod schema_drift;
+pub mod security;
 pub mod session;
+pub mod ssl;
+pub mod system_db;
 pub mod translator;
 pub mod types;
-pub mod catalog;
-pub mod functions;
-pub mod query;
-pub mod metadata;
-pub mod rewriter;
-pub mod cache;
-pub mod config;
-pub mod ssl;
-pub mod ddl;
-pub mod system_db;
-pub mod migration;
-pub mod schema_drift;
-pub mod error;
-pub mod validator;
-pub mod optimization;
 pub mod utils;
-pub mod security;
+pub mod validator;
 #[macro_use]
 pub mod profiling;
 
@@ -31,28 +31,28 @@ use thiserror::Error;
 pub enum PgSqliteError {
     #[error("Protocol error: {0}")]
     Protocol(String),
-    
+
     #[error("SQL parse error: {0}")]
     SqlParse(#[from] sqlparser::parser::ParserError),
-    
+
     #[error("SQLite error: {0}")]
     Sqlite(#[from] rusqlite::Error),
-    
+
     #[error("Type conversion error: {0}")]
     TypeConversion(String),
-    
+
     #[error("Feature not supported: {0}")]
     NotSupported(String),
-    
+
     #[error("Authentication failed")]
     AuthenticationFailed,
-    
+
     #[error("Invalid parameter: {0}")]
     InvalidParameter(String),
-    
+
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
-    
+
     #[error("Validation error: {0}")]
     Validation(#[from] error::PgError),
 }
@@ -65,18 +65,18 @@ impl PgSqliteError {
         match self {
             PgSqliteError::Protocol(_) => "08P01", // protocol_violation
             PgSqliteError::SqlParse(_) => "42601", // syntax_error
-            PgSqliteError::Sqlite(_) => "58000", // system_error
+            PgSqliteError::Sqlite(_) => "58000",   // system_error
             PgSqliteError::TypeConversion(_) => "22P02", // invalid_text_representation
             PgSqliteError::NotSupported(_) => "0A000", // feature_not_supported
             PgSqliteError::AuthenticationFailed => "28000", // invalid_authorization_specification
             PgSqliteError::InvalidParameter(_) => "22023", // invalid_parameter_value
-            PgSqliteError::Io(_) => "58030", // io_error
+            PgSqliteError::Io(_) => "58030",       // io_error
             PgSqliteError::Validation(pg_err) => match pg_err {
                 error::PgError::NumericValueOutOfRange { .. } => "22003", // numeric_value_out_of_range
                 error::PgError::StringDataRightTruncation { .. } => "22001", // string_data_right_truncation
-                error::PgError::UniqueViolation { .. } => "23505", // unique_violation
+                error::PgError::UniqueViolation { .. } => "23505",           // unique_violation
                 error::PgError::ForeignKeyViolation { .. } => "23503", // foreign_key_violation
-                error::PgError::SyntaxError { .. } => "42601", // syntax_error
+                error::PgError::SyntaxError { .. } => "42601",         // syntax_error
                 error::PgError::Generic { code, .. } => code,
             },
         }
@@ -100,30 +100,33 @@ pub async fn handle_test_connection_with_pool(
     _addr: std::net::SocketAddr,
     db_handler: std::sync::Arc<session::DbHandler>,
 ) -> anyhow::Result<()> {
-    use tokio_util::codec::Framed;
     use futures::{SinkExt, StreamExt};
-    use std::sync::Arc;
-    use protocol::{PostgresCodec, FrontendMessage, BackendMessage, AuthenticationMessage, TransactionStatus, ErrorResponse};
-    use session::{
-        message_loop::{handle_extended_or_aux_message, ExtendedMessageOptions},
-        QueryRouter, ReadOnlyDbHandler, SessionState,
+    use protocol::{
+        AuthenticationMessage, BackendMessage, ErrorResponse, FrontendMessage, PostgresCodec,
+        TransactionStatus,
     };
     use query::QueryExecutor;
+    use session::{
+        QueryRouter, ReadOnlyDbHandler, SessionState,
+        message_loop::{ExtendedMessageOptions, handle_extended_or_aux_message},
+    };
+    use std::sync::Arc;
+    use tokio_util::codec::Framed;
     use tracing::{debug, info};
-    
+
     let codec = PostgresCodec::new();
     let mut framed = Framed::new(stream, codec);
-    
+
     // Wait for startup message
     let startup = match framed.next().await {
         Some(Ok(FrontendMessage::StartupMessage(msg))) => msg,
         _ => return Err(anyhow::anyhow!("Expected startup message")),
     };
-    
+
     // Extract session parameters
     let mut database = "main".to_string();
     let mut user = "postgres".to_string();
-    
+
     for (key, value) in &startup.parameters {
         match key.as_str() {
             "database" => database = value.clone(),
@@ -131,25 +134,29 @@ pub async fn handle_test_connection_with_pool(
             _ => {}
         }
     }
-    
+
     let session = Arc::new(SessionState::new(database, user));
     let session_id = session.id;
-    
+
     // Set the database handler for this session for proper lifecycle management
     session.set_db_handler(db_handler.clone()).await;
-    
+
     // Create a connection for this session
-    session.initialize_connection().await
+    session
+        .initialize_connection()
+        .await
         .map_err(|e| anyhow::anyhow!("Failed to create session connection: {}", e))?;
-    
+
     // Set up connection pooling infrastructure (optional - can be enabled via config)
     let config = Arc::new(crate::config::global_config().clone());
-    
+
     // Create QueryRouter if pooling is enabled
     let _query_router = if config.use_pooling {
         // For tests, we'll use in-memory databases
-        let read_handler = Arc::new(ReadOnlyDbHandler::new(":memory:", config.clone())
-            .map_err(|e| anyhow::anyhow!("Failed to create read-only handler: {}", e))?);
+        let read_handler = Arc::new(
+            ReadOnlyDbHandler::new(":memory:", config.clone())
+                .map_err(|e| anyhow::anyhow!("Failed to create read-only handler: {}", e))?,
+        );
         Some(Arc::new(QueryRouter::new(
             db_handler.clone(),
             read_handler,
@@ -158,33 +165,44 @@ pub async fn handle_test_connection_with_pool(
     } else {
         None
     };
-    
+
     if config.use_pooling {
-        info!("Connection pooling enabled with read/write separation (pool size: {})", config.pool_size);
+        info!(
+            "Connection pooling enabled with read/write separation (pool size: {})",
+            config.pool_size
+        );
     }
-    
+
     // Send authentication OK
-    framed.send(BackendMessage::Authentication(AuthenticationMessage::Ok)).await?;
-    
+    framed
+        .send(BackendMessage::Authentication(AuthenticationMessage::Ok))
+        .await?;
+
     // Send parameter status messages
     for (key, value) in session.parameters.read().await.iter() {
-        framed.send(BackendMessage::ParameterStatus {
-            name: key.clone(),
-            value: value.clone(),
-        }).await?;
+        framed
+            .send(BackendMessage::ParameterStatus {
+                name: key.clone(),
+                value: value.clone(),
+            })
+            .await?;
     }
-    
+
     // Send backend key data
-    framed.send(BackendMessage::BackendKeyData {
-        process_id: std::process::id() as i32,
-        secret_key: 12345,
-    }).await?;
-    
+    framed
+        .send(BackendMessage::BackendKeyData {
+            process_id: std::process::id() as i32,
+            secret_key: 12345,
+        })
+        .await?;
+
     // Send ready for query
-    framed.send(BackendMessage::ReadyForQuery {
-        status: TransactionStatus::Idle,
-    }).await?;
-    
+    framed
+        .send(BackendMessage::ReadyForQuery {
+            status: TransactionStatus::Idle,
+        })
+        .await?;
+
     // Main message loop
     let result = async {
         while let Some(msg) = framed.next().await {
@@ -194,29 +212,43 @@ pub async fn handle_test_connection_with_pool(
                 FrontendMessage::Query(sql) => {
                     info!("Received Query (simple protocol): {}", sql);
                     // Execute the query with optional query routing
-                    match QueryExecutor::execute_query(&mut framed, &db_handler, &session, &sql, _query_router.as_ref()).await {
+                    match QueryExecutor::execute_query(
+                        &mut framed,
+                        &db_handler,
+                        &session,
+                        &sql,
+                        _query_router.as_ref(),
+                    )
+                    .await
+                    {
                         Ok(()) => {
                             // Query executed successfully
                         }
                         Err(e) => {
                             // If we're in a transaction, mark it as failed
                             if session.in_transaction().await {
-                                session.set_transaction_status(TransactionStatus::InFailedTransaction).await;
+                                session
+                                    .set_transaction_status(TransactionStatus::InFailedTransaction)
+                                    .await;
                             }
-                            
+
                             let err = ErrorResponse::new(
                                 "ERROR".to_string(),
                                 "42000".to_string(),
                                 format!("Query execution failed: {e}"),
                             );
-                            framed.send(BackendMessage::ErrorResponse(Box::new(err))).await?;
+                            framed
+                                .send(BackendMessage::ErrorResponse(Box::new(err)))
+                                .await?;
                         }
                     }
-                    
+
                     // Always send ReadyForQuery after handling the query
-                    framed.send(BackendMessage::ReadyForQuery {
-                        status: *session.transaction_status.read().await,
-                    }).await?;
+                    framed
+                        .send(BackendMessage::ReadyForQuery {
+                            status: *session.transaction_status.read().await,
+                        })
+                        .await?;
                     // Flush to ensure ReadyForQuery is sent immediately
                     framed.flush().await?;
                 }
@@ -234,10 +266,11 @@ pub async fn handle_test_connection_with_pool(
             }
         }
         Ok::<(), anyhow::Error>(())
-    }.await;
-    
+    }
+    .await;
+
     // Clean up session connection
     db_handler.remove_session_connection(&session_id);
-    
+
     result
 }

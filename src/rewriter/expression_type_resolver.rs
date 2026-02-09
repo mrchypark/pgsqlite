@@ -1,11 +1,11 @@
+use crate::types::{PgType, SchemaTypeMapper};
+use rusqlite::Connection;
 use sqlparser::ast::{
-    Expr, BinaryOperator, UnaryOperator, Value, Function, FunctionArg, FunctionArgExpr, 
-    FunctionArguments, Query, TableFactor, Join, SetExpr, ValueWithSpan, Cte, SelectItem,
-    SelectItemQualifiedWildcardKind, ObjectNamePart
+    BinaryOperator, Cte, Expr, Function, FunctionArg, FunctionArgExpr, FunctionArguments, Join,
+    ObjectNamePart, Query, SelectItem, SelectItemQualifiedWildcardKind, SetExpr, TableFactor,
+    UnaryOperator, Value, ValueWithSpan,
 };
 use std::collections::HashMap;
-use rusqlite::Connection;
-use crate::types::{PgType, SchemaTypeMapper};
 
 /// Context for resolving types within a query
 #[derive(Debug, Clone, Default)]
@@ -44,58 +44,63 @@ impl<'a> ExpressionTypeResolver<'a> {
             type_cache: HashMap::new(),
         }
     }
-    
+
     /// Get the connection
     pub fn conn(&self) -> &Connection {
         self.conn
     }
-    
+
     /// Build query context from a parsed query
     pub fn build_context(&mut self, query: &Query) -> QueryContext {
         let mut context = QueryContext::default();
-        
+
         // First, process CTEs if any
         if let Some(with) = &query.with {
             for cte in &with.cte_tables {
                 self.process_cte(cte, &mut context);
             }
         }
-        
+
         // Extract table information from query body
         if let SetExpr::Select(select) = &*query.body {
             for table in &select.from {
                 self.process_table_with_joins(&table.relation, &table.joins, &mut context);
             }
         }
-        
+
         context
     }
-    
+
     /// Process a CTE and extract its column types
     fn process_cte(&mut self, cte: &Cte, context: &mut QueryContext) {
         let cte_name = cte.alias.name.value.clone();
         let mut column_types = Vec::new();
-        
+
         // Analyze the CTE query to determine column types
         if let SetExpr::Select(select) = &*cte.query.body {
             // Build a temporary context for the CTE
             let mut cte_context = QueryContext::default();
-            
+
             // Process tables in the CTE
             for table in &select.from {
                 self.process_table_with_joins(&table.relation, &table.joins, &mut cte_context);
             }
-            
+
             // Analyze projection to get column types
             for (idx, item) in select.projection.iter().enumerate() {
                 match item {
                     SelectItem::UnnamedExpr(expr) => {
                         let expr_type = self.resolve_expr_type(expr, &cte_context);
                         let col_name = if !cte.alias.columns.is_empty() {
-                            cte.alias.columns.get(idx).map(|c| c.name.value.clone()).unwrap_or_else(|| format!("column{idx}"))
+                            cte.alias
+                                .columns
+                                .get(idx)
+                                .map(|c| c.name.value.clone())
+                                .unwrap_or_else(|| format!("column{idx}"))
                         } else {
                             // Try to extract name from expression
-                            self.extract_column_name(expr).unwrap_or_else(|| format!("column{idx}"))
+                            self.extract_column_name(expr)
+                                .unwrap_or_else(|| format!("column{idx}"))
                         };
                         column_types.push((col_name, expr_type));
                     }
@@ -106,20 +111,25 @@ impl<'a> ExpressionTypeResolver<'a> {
                     SelectItem::Wildcard(_) => {
                         // For wildcards, we need to get all columns from the referenced tables
                         if let Some(table) = &cte_context.default_table
-                            && let Ok(cols) = self.get_table_columns(table) {
-                                column_types.extend(cols);
-                            }
+                            && let Ok(cols) = self.get_table_columns(table)
+                        {
+                            column_types.extend(cols);
+                        }
                     }
                     SelectItem::QualifiedWildcard(name, _) => {
                         let table_name = match name {
-                            SelectItemQualifiedWildcardKind::ObjectName(obj_name) => {
-                                obj_name.0.last().map(|p| match p {
+                            SelectItemQualifiedWildcardKind::ObjectName(obj_name) => obj_name
+                                .0
+                                .last()
+                                .map(|p| match p {
                                     ObjectNamePart::Identifier(i) => i.value.clone(),
-                                }).unwrap_or_default()
-                            }
+                                })
+                                .unwrap_or_default(),
                             SelectItemQualifiedWildcardKind::Expr(_) => String::new(),
                         };
-                        let actual_table = cte_context.table_aliases.get(&table_name)
+                        let actual_table = cte_context
+                            .table_aliases
+                            .get(&table_name)
                             .cloned()
                             .unwrap_or(table_name);
                         if let Ok(cols) = self.get_table_columns(&actual_table) {
@@ -129,23 +139,30 @@ impl<'a> ExpressionTypeResolver<'a> {
                 }
             }
         }
-        
+
         context.cte_columns.insert(cte_name, column_types);
     }
-    
+
     /// Process a table and its joins to build context
-    pub fn process_table_with_joins(&mut self, table: &TableFactor, joins: &[Join], context: &mut QueryContext) {
+    pub fn process_table_with_joins(
+        &mut self,
+        table: &TableFactor,
+        joins: &[Join],
+        context: &mut QueryContext,
+    ) {
         match table {
             TableFactor::Table { name, alias, .. } => {
                 let table_name = name.to_string();
-                
+
                 if let Some(alias) = alias {
                     let alias_name = alias.name.value.clone();
-                    
+
                     // Check if this table name refers to a CTE
                     if let Some(cte_columns) = context.cte_columns.get(&table_name) {
                         // Map the CTE columns to the alias
-                        context.derived_table_columns.insert(alias_name.clone(), cte_columns.clone());
+                        context
+                            .derived_table_columns
+                            .insert(alias_name.clone(), cte_columns.clone());
                         context.table_aliases.insert(alias_name, table_name.clone());
                     } else {
                         // Regular table
@@ -161,53 +178,69 @@ impl<'a> ExpressionTypeResolver<'a> {
                     }
                 }
             }
-            TableFactor::Derived { subquery, alias: Some(alias), .. } => {
+            TableFactor::Derived {
+                subquery,
+                alias: Some(alias),
+                ..
+            } => {
                 // Handle subqueries by analyzing their projection
-                    let alias_name = alias.name.value.clone();
-                    let mut column_types = Vec::new();
-                    
-                    // Build context for subquery
-                    let subquery_context = self.build_context(subquery);
-                    
-                    // Analyze subquery projection
-                    if let SetExpr::Select(select) = &*subquery.body {
-                        for (idx, item) in select.projection.iter().enumerate() {
-                            match item {
-                                SelectItem::UnnamedExpr(expr) => {
-                                    let expr_type = self.resolve_expr_type(expr, &subquery_context);
-                                    let col_name = if !alias.columns.is_empty() {
-                                        alias.columns.get(idx).map(|c| c.name.value.clone()).unwrap_or_else(|| format!("column{idx}"))
-                                    } else {
-                                        self.extract_column_name(expr).unwrap_or_else(|| format!("column{idx}"))
-                                    };
-                                    column_types.push((col_name, expr_type));
-                                }
-                                SelectItem::ExprWithAlias { expr, alias: col_alias } => {
-                                    let expr_type = self.resolve_expr_type(expr, &subquery_context);
-                                    column_types.push((col_alias.value.clone(), expr_type));
-                                }
-                                _ => {} // Handle other select items
+                let alias_name = alias.name.value.clone();
+                let mut column_types = Vec::new();
+
+                // Build context for subquery
+                let subquery_context = self.build_context(subquery);
+
+                // Analyze subquery projection
+                if let SetExpr::Select(select) = &*subquery.body {
+                    for (idx, item) in select.projection.iter().enumerate() {
+                        match item {
+                            SelectItem::UnnamedExpr(expr) => {
+                                let expr_type = self.resolve_expr_type(expr, &subquery_context);
+                                let col_name = if !alias.columns.is_empty() {
+                                    alias
+                                        .columns
+                                        .get(idx)
+                                        .map(|c| c.name.value.clone())
+                                        .unwrap_or_else(|| format!("column{idx}"))
+                                } else {
+                                    self.extract_column_name(expr)
+                                        .unwrap_or_else(|| format!("column{idx}"))
+                                };
+                                column_types.push((col_name, expr_type));
                             }
+                            SelectItem::ExprWithAlias {
+                                expr,
+                                alias: col_alias,
+                            } => {
+                                let expr_type = self.resolve_expr_type(expr, &subquery_context);
+                                column_types.push((col_alias.value.clone(), expr_type));
+                            }
+                            _ => {} // Handle other select items
                         }
                     }
-                    
-                    context.derived_table_columns.insert(alias_name.clone(), column_types);
-                    context.table_aliases.insert(alias_name.clone(), "__derived__".to_string());
-                    
-                    // If this is the only table in the FROM clause, set it as default
-                    if context.default_table.is_none() {
-                        context.default_table = Some(alias_name);
-                    }
+                }
+
+                context
+                    .derived_table_columns
+                    .insert(alias_name.clone(), column_types);
+                context
+                    .table_aliases
+                    .insert(alias_name.clone(), "__derived__".to_string());
+
+                // If this is the only table in the FROM clause, set it as default
+                if context.default_table.is_none() {
+                    context.default_table = Some(alias_name);
+                }
             }
             _ => {}
         }
-        
+
         // Process joins
         for join in joins {
             self.process_table_with_joins(&join.relation, &[], context);
         }
     }
-    
+
     /// Extract column name from an expression
     pub fn extract_column_name(&self, expr: &Expr) -> Option<String> {
         match expr {
@@ -220,37 +253,38 @@ impl<'a> ExpressionTypeResolver<'a> {
             _ => None,
         }
     }
-    
+
     /// Get all columns from a table
     fn get_table_columns(&mut self, table_name: &str) -> Result<Vec<(String, PgType)>, String> {
         let mut columns = Vec::new();
-        
+
         // Query SQLite's pragma to get column information
         let query = format!("PRAGMA table_info({table_name})");
         if let Ok(mut stmt) = self.conn.prepare(&query)
             && let Ok(rows) = stmt.query_map([], |row| {
                 let col_name: String = row.get(1)?;
                 Ok(col_name)
-            }) {
-                for col_name in rows.flatten() {
-                    if let Some(type_oid) = SchemaTypeMapper::get_type_from_schema(self.conn, table_name, &col_name) {
-                        let pg_type = PgType::from_oid(type_oid).unwrap_or(PgType::Text);
-                        columns.push((col_name, pg_type));
-                    } else {
-                        columns.push((col_name, PgType::Text));
-                    }
+            })
+        {
+            for col_name in rows.flatten() {
+                if let Some(type_oid) =
+                    SchemaTypeMapper::get_type_from_schema(self.conn, table_name, &col_name)
+                {
+                    let pg_type = PgType::from_oid(type_oid).unwrap_or(PgType::Text);
+                    columns.push((col_name, pg_type));
+                } else {
+                    columns.push((col_name, PgType::Text));
                 }
             }
-        
+        }
+
         Ok(columns)
     }
-    
+
     /// Resolve the type of an expression
     pub fn resolve_expr_type(&mut self, expr: &Expr, context: &QueryContext) -> PgType {
         match expr {
-            Expr::Identifier(ident) => {
-                self.resolve_column_type(None, &ident.value, context)
-            }
+            Expr::Identifier(ident) => self.resolve_column_type(None, &ident.value, context),
             Expr::CompoundIdentifier(parts) => {
                 if parts.len() >= 2 {
                     let table = &parts[parts.len() - 2].value;
@@ -270,9 +304,7 @@ impl<'a> ExpressionTypeResolver<'a> {
                 let expr_type = self.resolve_expr_type(expr, context);
                 self.infer_unary_op_type(*op, expr_type)
             }
-            Expr::Function(func) => {
-                self.resolve_function_type(func, context)
-            }
+            Expr::Function(func) => self.resolve_function_type(func, context),
             Expr::Cast { data_type, .. } => {
                 // Convert SQL data type to PgType
                 let type_str = data_type.to_string().to_uppercase();
@@ -285,7 +317,7 @@ impl<'a> ExpressionTypeResolver<'a> {
                     "NUMERIC" | "DECIMAL" => PgType::Numeric,
                     "BOOLEAN" | "BOOL" => PgType::Bool,
                     "TEXT" | "VARCHAR" | "CHAR" => PgType::Text,
-                    _ => self.sql_type_to_pg_type(&data_type.to_string())
+                    _ => self.sql_type_to_pg_type(&data_type.to_string()),
                 }
             }
             Expr::Case { else_result, .. } => {
@@ -322,13 +354,20 @@ impl<'a> ExpressionTypeResolver<'a> {
             _ => PgType::Text, // Default for unknown expressions
         }
     }
-    
+
     /// Resolve column type from schema
-    fn resolve_column_type(&mut self, table: Option<&str>, column: &str, context: &QueryContext) -> PgType {
+    fn resolve_column_type(
+        &mut self,
+        table: Option<&str>,
+        column: &str,
+        context: &QueryContext,
+    ) -> PgType {
         // Determine actual table name
         let table_name = if let Some(t) = table {
             // Check if it's an alias
-            context.table_aliases.get(t)
+            context
+                .table_aliases
+                .get(t)
                 .cloned()
                 .unwrap_or_else(|| t.to_string())
         } else if let Some(default) = &context.default_table {
@@ -338,7 +377,9 @@ impl<'a> ExpressionTypeResolver<'a> {
             // No table specified and no default - search all tables in context
             // This handles unqualified columns in JOIN queries
             for actual_table in context.table_aliases.values() {
-                if let Some(type_oid) = SchemaTypeMapper::get_type_from_schema(self.conn, actual_table, column) {
+                if let Some(type_oid) =
+                    SchemaTypeMapper::get_type_from_schema(self.conn, actual_table, column)
+                {
                     let pg_type = PgType::from_oid(type_oid).unwrap_or(PgType::Text);
                     return pg_type;
                 }
@@ -346,31 +387,34 @@ impl<'a> ExpressionTypeResolver<'a> {
             // If not found in any aliased table, return empty string to continue normal flow
             String::new()
         };
-        
+
         // Check if this is a derived table or CTE
         if table_name == "__derived__" {
             // Look up in derived table columns
             if let Some(alias) = table
-                && let Some(columns) = context.derived_table_columns.get(alias) {
-                    for (col_name, col_type) in columns {
-                        if col_name == column {
-                            return *col_type;
-                        }
-                    }
-                }
-            return PgType::Text;
-        }
-        
-        // Also check if the table_name itself is a derived table (when column is unqualified)
-        if table.is_none() && context.derived_table_columns.contains_key(&table_name)
-            && let Some(columns) = context.derived_table_columns.get(&table_name) {
+                && let Some(columns) = context.derived_table_columns.get(alias)
+            {
                 for (col_name, col_type) in columns {
                     if col_name == column {
                         return *col_type;
                     }
                 }
             }
-        
+            return PgType::Text;
+        }
+
+        // Also check if the table_name itself is a derived table (when column is unqualified)
+        if table.is_none()
+            && context.derived_table_columns.contains_key(&table_name)
+            && let Some(columns) = context.derived_table_columns.get(&table_name)
+        {
+            for (col_name, col_type) in columns {
+                if col_name == column {
+                    return *col_type;
+                }
+            }
+        }
+
         // Check if this is a CTE
         if let Some(cte_columns) = context.cte_columns.get(&table_name) {
             for (col_name, col_type) in cte_columns {
@@ -380,15 +424,17 @@ impl<'a> ExpressionTypeResolver<'a> {
             }
             return PgType::Text;
         }
-        
+
         // Check cache first
         let cache_key = format!("{table_name}.{column}");
         if let Some(&pg_type) = self.type_cache.get(&cache_key) {
             return pg_type;
         }
-        
+
         // Look up in schema
-        if let Some(type_oid) = SchemaTypeMapper::get_type_from_schema(self.conn, &table_name, column) {
+        if let Some(type_oid) =
+            SchemaTypeMapper::get_type_from_schema(self.conn, &table_name, column)
+        {
             let pg_type = PgType::from_oid(type_oid).unwrap_or(PgType::Text);
             self.type_cache.insert(cache_key, pg_type);
             pg_type
@@ -396,7 +442,7 @@ impl<'a> ExpressionTypeResolver<'a> {
             PgType::Text // Default if not found
         }
     }
-    
+
     /// Resolve type of a literal value
     fn resolve_value_type(&self, val: &Value) -> PgType {
         match val {
@@ -418,24 +464,30 @@ impl<'a> ExpressionTypeResolver<'a> {
             _ => PgType::Text,
         }
     }
-    
+
     /// Infer result type of binary operation
     fn infer_binary_op_type(&self, left: PgType, op: BinaryOperator, right: PgType) -> PgType {
         use BinaryOperator::*;
-        
+
         match op {
             // Arithmetic operations
             Plus | Minus | Multiply | Divide | Modulo => {
                 // If either operand is numeric, result is numeric
                 if left == PgType::Numeric || right == PgType::Numeric {
                     PgType::Numeric
-                } else if left == PgType::Float8 || right == PgType::Float8 ||
-                          left == PgType::Float4 || right == PgType::Float4 {
+                } else if left == PgType::Float8
+                    || right == PgType::Float8
+                    || left == PgType::Float4
+                    || right == PgType::Float4
+                {
                     PgType::Float8
                 } else if left == PgType::Int8 || right == PgType::Int8 {
                     PgType::Int8
-                } else if left == PgType::Int4 || right == PgType::Int4 ||
-                          left == PgType::Int2 || right == PgType::Int2 {
+                } else if left == PgType::Int4
+                    || right == PgType::Int4
+                    || left == PgType::Int2
+                    || right == PgType::Int2
+                {
                     PgType::Int4
                 } else {
                     PgType::Text
@@ -450,22 +502,22 @@ impl<'a> ExpressionTypeResolver<'a> {
             _ => PgType::Text,
         }
     }
-    
+
     /// Infer result type of unary operation
     fn infer_unary_op_type(&self, op: UnaryOperator, expr_type: PgType) -> PgType {
         use UnaryOperator::*;
-        
+
         match op {
             Not => PgType::Bool,
             Plus | Minus => expr_type, // Preserves numeric type
             _ => PgType::Text,
         }
     }
-    
+
     /// Resolve function return type
     fn resolve_function_type(&mut self, func: &Function, context: &QueryContext) -> PgType {
         let func_name = func.name.to_string().to_uppercase();
-            
+
         match func_name.as_str() {
             // Aggregate functions
             "COUNT" => PgType::Int8,
@@ -524,9 +576,9 @@ impl<'a> ExpressionTypeResolver<'a> {
                 }
             }
             // Math functions that always return float
-            "SQRT" | "POWER" | "POW" | "EXP" | "LN" | "LOG" |
-            "SIN" | "COS" | "TAN" | "ASIN" | "ACOS" | "ATAN" | "ATAN2" |
-            "RADIANS" | "DEGREES" | "PI" | "RANDOM" | "SIGN" | "TRUNC" | "MOD" => PgType::Float8,
+            "SQRT" | "POWER" | "POW" | "EXP" | "LN" | "LOG" | "SIN" | "COS" | "TAN" | "ASIN"
+            | "ACOS" | "ATAN" | "ATAN2" | "RADIANS" | "DEGREES" | "PI" | "RANDOM" | "SIGN"
+            | "TRUNC" | "MOD" => PgType::Float8,
             // String functions
             "LENGTH" | "CHAR_LENGTH" => PgType::Int4,
             "LOWER" | "UPPER" | "TRIM" | "SUBSTR" => PgType::Text,
@@ -561,20 +613,22 @@ impl<'a> ExpressionTypeResolver<'a> {
             _ => PgType::Text, // Default for unknown functions
         }
     }
-    
+
     /// Convert SQL type string to PgType
     fn sql_type_to_pg_type(&self, type_str: &str) -> PgType {
         let upper = type_str.to_uppercase();
         match upper.as_str() {
             s if s.contains("INT") => PgType::Int4,
             s if s.contains("NUMERIC") || s.contains("DECIMAL") => PgType::Numeric,
-            s if s.contains("FLOAT") || s.contains("REAL") || s.contains("DOUBLE") => PgType::Float8,
+            s if s.contains("FLOAT") || s.contains("REAL") || s.contains("DOUBLE") => {
+                PgType::Float8
+            }
             s if s.contains("BOOL") => PgType::Bool,
             s if s.contains("TEXT") || s.contains("VARCHAR") || s.contains("CHAR") => PgType::Text,
             _ => PgType::Text,
         }
     }
-    
+
     /// Check if an expression involves decimal type
     pub fn involves_decimal(&mut self, expr: &Expr, context: &QueryContext) -> bool {
         match expr {
@@ -599,17 +653,13 @@ impl<'a> ExpressionTypeResolver<'a> {
                 // Check if subquery result involves decimal
                 let subquery_context = self.build_context(subquery);
                 match &*subquery.body {
-                    SetExpr::Select(select) => {
-                        select.projection.iter().any(|item| {
-                            match item {
-                                SelectItem::UnnamedExpr(e) | SelectItem::ExprWithAlias { expr: e, .. } => {
-                                    let t = self.resolve_expr_type(e, &subquery_context);
-                                    t == PgType::Numeric
-                                }
-                                _ => false,
-                            }
-                        })
-                    }
+                    SetExpr::Select(select) => select.projection.iter().any(|item| match item {
+                        SelectItem::UnnamedExpr(e) | SelectItem::ExprWithAlias { expr: e, .. } => {
+                            let t = self.resolve_expr_type(e, &subquery_context);
+                            t == PgType::Numeric
+                        }
+                        _ => false,
+                    }),
                     _ => false,
                 }
             }

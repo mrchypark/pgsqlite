@@ -1,6 +1,6 @@
-use std::collections::HashMap;
-use crate::types::{PgType, SchemaTypeMapper};
 use crate::translator::DateTimeSubtype;
+use crate::types::{PgType, SchemaTypeMapper};
+use std::collections::HashMap;
 
 /// Information about a column's source and type
 #[derive(Debug, Clone)]
@@ -70,35 +70,35 @@ impl TypeResolutionContext {
             expression_types: HashMap::new(),
         }
     }
-    
+
     /// Load schemas from the schema type mapper
     pub fn load_schemas(&mut self, _schema_mapper: &SchemaTypeMapper) {
         // This will be implemented to load from __pgsqlite_schema
         // For now, just create empty structure
     }
-    
+
     /// Add a column alias
     pub fn add_alias(&mut self, alias: String, source: ColumnSource) {
         self.column_aliases.insert(alias, source);
     }
-    
+
     /// Add an expression type
     pub fn add_expression(&mut self, name: String, type_info: ExpressionTypeInfo) {
         self.expression_types.insert(name, type_info);
     }
-    
+
     /// Resolve the type of a column or expression
     pub fn resolve_type(&self, name: &str) -> Option<(PgType, Option<DateTimeSubtype>)> {
         // First check if it's an expression
         if let Some(expr_info) = self.expression_types.get(name) {
             return Some((expr_info.base_type, expr_info.datetime_subtype));
         }
-        
+
         // Then check if it's an alias
         if let Some(source) = self.column_aliases.get(name) {
             return Some((source.pg_type, source.datetime_subtype));
         }
-        
+
         // Finally check schemas directly
         for schema in self.schemas.values() {
             if let Some(col_schema) = schema.columns.get(name) {
@@ -106,10 +106,10 @@ impl TypeResolutionContext {
                 return Some((col_schema.pg_type, datetime_subtype));
             }
         }
-        
+
         None
     }
-    
+
     /// Infer datetime subtype from PgType
     fn infer_datetime_subtype(pg_type: &PgType) -> Option<DateTimeSubtype> {
         match pg_type {
@@ -136,32 +136,31 @@ impl TypePropagator {
     ) -> (PgType, Option<DateTimeSubtype>) {
         match (left, op, right) {
             // Timestamp + interval = timestamp
-            ((PgType::Timestamp, dt), "+", (PgType::Interval, _)) |
-            ((PgType::Timestamptz, dt), "+", (PgType::Interval, _)) => {
-                (left.0, dt)
-            }
+            ((PgType::Timestamp, dt), "+", (PgType::Interval, _))
+            | ((PgType::Timestamptz, dt), "+", (PgType::Interval, _)) => (left.0, dt),
             // Timestamp - timestamp = interval
-            ((PgType::Timestamp, _), "-", (PgType::Timestamp, _)) |
-            ((PgType::Timestamptz, _), "-", (PgType::Timestamptz, _)) => {
+            ((PgType::Timestamp, _), "-", (PgType::Timestamp, _))
+            | ((PgType::Timestamptz, _), "-", (PgType::Timestamptz, _)) => {
                 (PgType::Interval, Some(DateTimeSubtype::Interval))
             }
             // Date + integer = date
-            ((PgType::Date, dt), "+", (PgType::Int4 | PgType::Int8, _)) => {
-                (PgType::Date, dt)
-            }
+            ((PgType::Date, dt), "+", (PgType::Int4 | PgType::Int8, _)) => (PgType::Date, dt),
             // Time + interval = time
-            ((PgType::Time, dt), "+", (PgType::Interval, _)) => {
-                (PgType::Time, dt)
-            }
+            ((PgType::Time, dt), "+", (PgType::Interval, _)) => (PgType::Time, dt),
             // Default: left type wins
             _ => left,
         }
     }
-    
+
     /// Determine the result type of a function call
-    pub fn function_type(name: &str, args: &[(PgType, Option<DateTimeSubtype>)]) -> (PgType, Option<DateTimeSubtype>) {
+    pub fn function_type(
+        name: &str,
+        args: &[(PgType, Option<DateTimeSubtype>)],
+    ) -> (PgType, Option<DateTimeSubtype>) {
         match name.to_lowercase().as_str() {
-            "now" | "current_timestamp" => (PgType::Timestamptz, Some(DateTimeSubtype::TimestampTz)),
+            "now" | "current_timestamp" => {
+                (PgType::Timestamptz, Some(DateTimeSubtype::TimestampTz))
+            }
             "current_date" => (PgType::Date, Some(DateTimeSubtype::Date)),
             "current_time" => (PgType::Timetz, Some(DateTimeSubtype::TimeTz)),
             "age" => (PgType::Interval, Some(DateTimeSubtype::Interval)),
@@ -182,7 +181,7 @@ impl TypePropagator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_type_propagation() {
         // Test timestamp + interval
@@ -193,7 +192,7 @@ mod tests {
         );
         assert_eq!(result.0, PgType::Timestamp);
         assert_eq!(result.1, Some(DateTimeSubtype::Timestamp));
-        
+
         // Test timestamp - timestamp
         let result = TypePropagator::binary_op_type(
             (PgType::Timestamptz, Some(DateTimeSubtype::TimestampTz)),
@@ -203,17 +202,20 @@ mod tests {
         assert_eq!(result.0, PgType::Interval);
         assert_eq!(result.1, Some(DateTimeSubtype::Interval));
     }
-    
+
     #[test]
     fn test_function_types() {
         let result = TypePropagator::function_type("now", &[]);
         assert_eq!(result.0, PgType::Timestamptz);
         assert_eq!(result.1, Some(DateTimeSubtype::TimestampTz));
-        
-        let result = TypePropagator::function_type("extract", &[
-            (PgType::Text, None),
-            (PgType::Timestamp, Some(DateTimeSubtype::Timestamp)),
-        ]);
+
+        let result = TypePropagator::function_type(
+            "extract",
+            &[
+                (PgType::Text, None),
+                (PgType::Timestamp, Some(DateTimeSubtype::Timestamp)),
+            ],
+        );
         assert_eq!(result.0, PgType::Float8);
         assert_eq!(result.1, None);
     }

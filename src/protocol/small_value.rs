@@ -54,9 +54,12 @@ impl SmallValue {
         } else {
             30 // Scientific notation
         };
-        
+
         if text_len <= 24 {
-            Some(SmallValue::SmallFloat { value, text_len: text_len as u8 })
+            Some(SmallValue::SmallFloat {
+                value,
+                text_len: text_len as u8,
+            })
         } else {
             None
         }
@@ -71,19 +74,19 @@ impl SmallValue {
         }
     }
 
-    /// Get the text representation of this small value
-    pub fn as_text(&self) -> &[u8] {
+    /// Get the static text representation of this value (when available).
+    ///
+    /// Dynamic values (e.g. `SmallInt`, `SmallFloat`) require formatting via
+    /// `write_text_to_buffer()` and therefore return `None`.
+    pub fn as_text(&self) -> Option<&'static [u8]> {
         match self {
-            SmallValue::BoolTrue => b"t",
-            SmallValue::BoolFalse => b"f",
-            SmallValue::Zero => b"0",
-            SmallValue::One => b"1",
-            SmallValue::MinusOne => b"-1",
-            SmallValue::Empty => b"",
-            SmallValue::SmallInt { .. } | SmallValue::SmallFloat { .. } => {
-                // These need dynamic formatting, will be handled differently
-                unreachable!("SmallInt and SmallFloat need special handling")
-            }
+            SmallValue::BoolTrue => Some(b"t"),
+            SmallValue::BoolFalse => Some(b"f"),
+            SmallValue::Zero => Some(b"0"),
+            SmallValue::One => Some(b"1"),
+            SmallValue::MinusOne => Some(b"-1"),
+            SmallValue::Empty => Some(b""),
+            SmallValue::SmallInt { .. } | SmallValue::SmallFloat { .. } => None,
         }
     }
 
@@ -162,7 +165,10 @@ impl SmallValue {
                     None
                 }
             }
-            SmallValue::Zero | SmallValue::One | SmallValue::MinusOne | SmallValue::SmallInt { .. } => {
+            SmallValue::Zero
+            | SmallValue::One
+            | SmallValue::MinusOne
+            | SmallValue::SmallInt { .. } => {
                 let int_value = match self {
                     SmallValue::Zero => 0,
                     SmallValue::One => 1,
@@ -172,20 +178,26 @@ impl SmallValue {
                 };
 
                 match pg_type_oid {
-                    t if t == PgType::Int2.to_oid() => Some(BinaryEncoder::encode_int2(int_value as i16)),
-                    t if t == PgType::Int4.to_oid() => Some(BinaryEncoder::encode_int4(int_value as i32)),
+                    t if t == PgType::Int2.to_oid() => {
+                        Some(BinaryEncoder::encode_int2(int_value as i16))
+                    }
+                    t if t == PgType::Int4.to_oid() => {
+                        Some(BinaryEncoder::encode_int4(int_value as i32))
+                    }
                     t if t == PgType::Int8.to_oid() => Some(BinaryEncoder::encode_int8(int_value)),
-                    t if t == PgType::Bool.to_oid() => Some(BinaryEncoder::encode_bool(int_value != 0)),
+                    t if t == PgType::Bool.to_oid() => {
+                        Some(BinaryEncoder::encode_bool(int_value != 0))
+                    }
                     _ => None,
                 }
             }
-            SmallValue::SmallFloat { value, .. } => {
-                match pg_type_oid {
-                    t if t == PgType::Float4.to_oid() => Some(BinaryEncoder::encode_float4(*value as f32)),
-                    t if t == PgType::Float8.to_oid() => Some(BinaryEncoder::encode_float8(*value)),
-                    _ => None,
+            SmallValue::SmallFloat { value, .. } => match pg_type_oid {
+                t if t == PgType::Float4.to_oid() => {
+                    Some(BinaryEncoder::encode_float4(*value as f32))
                 }
-            }
+                t if t == PgType::Float8.to_oid() => Some(BinaryEncoder::encode_float8(*value)),
+                _ => None,
+            },
             SmallValue::Empty => None,
         }
     }
@@ -215,17 +227,29 @@ mod tests {
     #[test]
     fn test_small_value_creation() {
         // Test common integers
-        assert!(matches!(SmallValue::from_integer(0), Some(SmallValue::Zero)));
+        assert!(matches!(
+            SmallValue::from_integer(0),
+            Some(SmallValue::Zero)
+        ));
         assert!(matches!(SmallValue::from_integer(1), Some(SmallValue::One)));
-        assert!(matches!(SmallValue::from_integer(-1), Some(SmallValue::MinusOne)));
-        
+        assert!(matches!(
+            SmallValue::from_integer(-1),
+            Some(SmallValue::MinusOne)
+        ));
+
         // Test small integer
         let small = SmallValue::from_integer(42).unwrap();
-        assert!(matches!(small, SmallValue::SmallInt { value: 42, text_len: 2 }));
-        
+        assert!(matches!(
+            small,
+            SmallValue::SmallInt {
+                value: 42,
+                text_len: 2
+            }
+        ));
+
         // Test that i64::MAX is still considered small (19 digits)
         assert!(SmallValue::from_integer(i64::MAX).is_some());
-        
+
         // Test a large but valid i64 number
         let large_num = 999_999_999_999_999_999i64; // 18 digits
         assert!(SmallValue::from_integer(large_num).is_some());
@@ -234,17 +258,17 @@ mod tests {
     #[test]
     fn test_text_formatting() {
         let mut buffer = [0u8; 32];
-        
+
         // Test static values
         assert_eq!(SmallValue::BoolTrue.write_text_to_buffer(&mut buffer), 1);
         assert_eq!(&buffer[..1], b"t");
-        
+
         assert_eq!(SmallValue::Zero.write_text_to_buffer(&mut buffer), 1);
         assert_eq!(&buffer[..1], b"0");
-        
+
         assert_eq!(SmallValue::MinusOne.write_text_to_buffer(&mut buffer), 2);
         assert_eq!(&buffer[..2], b"-1");
-        
+
         // Test dynamic integer
         let small_int = SmallValue::from_integer(12345).unwrap();
         assert_eq!(small_int.write_text_to_buffer(&mut buffer), 5);
@@ -257,7 +281,7 @@ mod tests {
         let bool_true = SmallValue::BoolTrue;
         let binary = bool_true.to_binary(PgType::Bool.to_oid()).unwrap();
         assert_eq!(binary, vec![1]);
-        
+
         // Test integer binary conversion
         let one = SmallValue::One;
         let binary = one.to_binary(PgType::Int4.to_oid()).unwrap();

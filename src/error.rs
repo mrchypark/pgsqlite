@@ -33,54 +33,66 @@ pub enum PgError {
         position: Option<i32>,
     },
     /// Generic error
-    Generic {
-        code: String,
-        message: String,
-    },
+    Generic { code: String, message: String },
 }
 
 impl PgError {
     /// Convert to ErrorResponse for protocol
     pub fn to_error_response(&self) -> ErrorResponse {
         match self {
-            PgError::StringDataRightTruncation { type_name, column_name, actual_length, max_length } => {
-                ErrorResponse {
-                    severity: "ERROR".to_string(),
-                    code: "22001".to_string(),
-                    message: format!("value too long for type {type_name}"),
-                    detail: Some(format!(
-                        "Failing row contains ({column_name}) with {actual_length} characters, maximum is {max_length}."
-                    )),
-                    hint: None,
-                    position: None,
-                    internal_position: None,
-                    internal_query: None,
-                    where_: None,
-                    schema: None,
-                    table: None,
-                    column: Some(column_name.clone()),
-                    datatype: Some(type_name.clone()),
-                    constraint: None,
-                    file: None,
-                    line: None,
-                    routine: None,
-                }
-            }
-            PgError::NumericValueOutOfRange { type_name, column_name, value: _ } => {
+            PgError::StringDataRightTruncation {
+                type_name,
+                column_name,
+                actual_length,
+                max_length,
+            } => ErrorResponse {
+                severity: "ERROR".to_string(),
+                code: "22001".to_string(),
+                message: format!("value too long for type {type_name}"),
+                detail: Some(format!(
+                    "Failing row contains ({column_name}) with {actual_length} characters, maximum is {max_length}."
+                )),
+                hint: None,
+                position: None,
+                internal_position: None,
+                internal_query: None,
+                where_: None,
+                schema: None,
+                table: None,
+                column: Some(column_name.clone()),
+                datatype: Some(type_name.clone()),
+                constraint: None,
+                file: None,
+                line: None,
+                routine: None,
+            },
+            PgError::NumericValueOutOfRange {
+                type_name,
+                column_name,
+                value: _,
+            } => {
                 ErrorResponse {
                     severity: "ERROR".to_string(),
                     code: "22003".to_string(),
                     message: "numeric field overflow".to_string(),
                     detail: Some({
                         // Parse numeric(p,s) to extract precision and scale
-                        let params = type_name.split('(').nth(1).unwrap_or("").trim_end_matches(')');
+                        let params = type_name
+                            .split('(')
+                            .nth(1)
+                            .unwrap_or("")
+                            .trim_end_matches(')');
                         let parts: Vec<&str> = params.split(',').collect();
                         let precision = parts.first().unwrap_or(&"").trim();
                         let scale = parts.get(1).unwrap_or(&"0").trim();
                         format!(
                             "A field with precision {}, scale {} must round to an absolute value less than 10^({}-{}) = 10^{}.",
-                            precision, scale, precision, scale,
-                            precision.parse::<i32>().unwrap_or(0) - scale.parse::<i32>().unwrap_or(0)
+                            precision,
+                            scale,
+                            precision,
+                            scale,
+                            precision.parse::<i32>().unwrap_or(0)
+                                - scale.parse::<i32>().unwrap_or(0)
                         )
                     }),
                     hint: None,
@@ -98,90 +110,92 @@ impl PgError {
                     routine: None,
                 }
             }
-            PgError::UniqueViolation { constraint_name, detail } => {
-                ErrorResponse {
-                    severity: "ERROR".to_string(),
-                    code: "23505".to_string(),
-                    message: format!("duplicate key value violates unique constraint \"{constraint_name}\""),
-                    detail: Some(detail.clone()),
-                    hint: None,
-                    position: None,
-                    internal_position: None,
-                    internal_query: None,
-                    where_: None,
-                    schema: None,
-                    table: None,
-                    column: None,
-                    datatype: None,
-                    constraint: Some(constraint_name.clone()),
-                    file: None,
-                    line: None,
-                    routine: None,
-                }
-            }
-            PgError::ForeignKeyViolation { constraint_name, detail } => {
-                ErrorResponse {
-                    severity: "ERROR".to_string(),
-                    code: "23503".to_string(),
-                    message: format!("insert or update on table violates foreign key constraint \"{constraint_name}\""),
-                    detail: Some(detail.clone()),
-                    hint: None,
-                    position: None,
-                    internal_position: None,
-                    internal_query: None,
-                    where_: None,
-                    schema: None,
-                    table: None,
-                    column: None,
-                    datatype: None,
-                    constraint: Some(constraint_name.clone()),
-                    file: None,
-                    line: None,
-                    routine: None,
-                }
-            }
-            PgError::SyntaxError { message, position } => {
-                ErrorResponse {
-                    severity: "ERROR".to_string(),
-                    code: "42601".to_string(),
-                    message: message.clone(),
-                    detail: None,
-                    hint: None,
-                    position: *position,
-                    internal_position: None,
-                    internal_query: None,
-                    where_: None,
-                    schema: None,
-                    table: None,
-                    column: None,
-                    datatype: None,
-                    constraint: None,
-                    file: None,
-                    line: None,
-                    routine: None,
-                }
-            }
-            PgError::Generic { code, message } => {
-                ErrorResponse {
-                    severity: "ERROR".to_string(),
-                    code: code.clone(),
-                    message: message.clone(),
-                    detail: None,
-                    hint: None,
-                    position: None,
-                    internal_position: None,
-                    internal_query: None,
-                    where_: None,
-                    schema: None,
-                    table: None,
-                    column: None,
-                    datatype: None,
-                    constraint: None,
-                    file: None,
-                    line: None,
-                    routine: None,
-                }
-            }
+            PgError::UniqueViolation {
+                constraint_name,
+                detail,
+            } => ErrorResponse {
+                severity: "ERROR".to_string(),
+                code: "23505".to_string(),
+                message: format!(
+                    "duplicate key value violates unique constraint \"{constraint_name}\""
+                ),
+                detail: Some(detail.clone()),
+                hint: None,
+                position: None,
+                internal_position: None,
+                internal_query: None,
+                where_: None,
+                schema: None,
+                table: None,
+                column: None,
+                datatype: None,
+                constraint: Some(constraint_name.clone()),
+                file: None,
+                line: None,
+                routine: None,
+            },
+            PgError::ForeignKeyViolation {
+                constraint_name,
+                detail,
+            } => ErrorResponse {
+                severity: "ERROR".to_string(),
+                code: "23503".to_string(),
+                message: format!(
+                    "insert or update on table violates foreign key constraint \"{constraint_name}\""
+                ),
+                detail: Some(detail.clone()),
+                hint: None,
+                position: None,
+                internal_position: None,
+                internal_query: None,
+                where_: None,
+                schema: None,
+                table: None,
+                column: None,
+                datatype: None,
+                constraint: Some(constraint_name.clone()),
+                file: None,
+                line: None,
+                routine: None,
+            },
+            PgError::SyntaxError { message, position } => ErrorResponse {
+                severity: "ERROR".to_string(),
+                code: "42601".to_string(),
+                message: message.clone(),
+                detail: None,
+                hint: None,
+                position: *position,
+                internal_position: None,
+                internal_query: None,
+                where_: None,
+                schema: None,
+                table: None,
+                column: None,
+                datatype: None,
+                constraint: None,
+                file: None,
+                line: None,
+                routine: None,
+            },
+            PgError::Generic { code, message } => ErrorResponse {
+                severity: "ERROR".to_string(),
+                code: code.clone(),
+                message: message.clone(),
+                detail: None,
+                hint: None,
+                position: None,
+                internal_position: None,
+                internal_query: None,
+                where_: None,
+                schema: None,
+                table: None,
+                column: None,
+                datatype: None,
+                constraint: None,
+                file: None,
+                line: None,
+                routine: None,
+            },
         }
     }
 }
@@ -189,17 +203,44 @@ impl PgError {
 impl fmt::Display for PgError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            PgError::StringDataRightTruncation { type_name, column_name, actual_length, max_length } => {
-                write!(f, "value too long for type {type_name} in column {column_name} ({actual_length} characters, maximum is {max_length})")
+            PgError::StringDataRightTruncation {
+                type_name,
+                column_name,
+                actual_length,
+                max_length,
+            } => {
+                write!(
+                    f,
+                    "value too long for type {type_name} in column {column_name} ({actual_length} characters, maximum is {max_length})"
+                )
             }
-            PgError::NumericValueOutOfRange { type_name, column_name, value } => {
-                write!(f, "numeric field overflow for column {column_name} (type: {type_name}, value: {value})")
+            PgError::NumericValueOutOfRange {
+                type_name,
+                column_name,
+                value,
+            } => {
+                write!(
+                    f,
+                    "numeric field overflow for column {column_name} (type: {type_name}, value: {value})"
+                )
             }
-            PgError::UniqueViolation { constraint_name, detail } => {
-                write!(f, "duplicate key value violates unique constraint \"{constraint_name}\": {detail}")
+            PgError::UniqueViolation {
+                constraint_name,
+                detail,
+            } => {
+                write!(
+                    f,
+                    "duplicate key value violates unique constraint \"{constraint_name}\": {detail}"
+                )
             }
-            PgError::ForeignKeyViolation { constraint_name, detail } => {
-                write!(f, "foreign key constraint \"{constraint_name}\" violation: {detail}")
+            PgError::ForeignKeyViolation {
+                constraint_name,
+                detail,
+            } => {
+                write!(
+                    f,
+                    "foreign key constraint \"{constraint_name}\" violation: {detail}"
+                )
             }
             PgError::SyntaxError { message, position } => {
                 if let Some(pos) = position {
@@ -230,7 +271,8 @@ pub fn sqlite_error_to_pg(err: &rusqlite::Error, _query: &str) -> ErrorResponse 
                             return ErrorResponse {
                                 severity: "ERROR".to_string(),
                                 code: "23505".to_string(),
-                                message: "duplicate key value violates unique constraint".to_string(),
+                                message: "duplicate key value violates unique constraint"
+                                    .to_string(),
                                 detail: Some(msg.clone()),
                                 hint: None,
                                 position: None,

@@ -48,7 +48,7 @@ impl TrackingAllocator {
         DEALLOCATIONS.store(0, Ordering::Relaxed);
         BYTES_ALLOCATED.store(0, Ordering::Relaxed);
     }
-    
+
     /// Get the current allocation statistics
     pub fn stats() -> AllocationStats {
         AllocationStats {

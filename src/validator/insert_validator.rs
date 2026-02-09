@@ -1,6 +1,6 @@
-use regex::Regex;
 use crate::error::PgError;
 use crate::validator::StringConstraintValidator;
+use regex::Regex;
 use rusqlite::Connection;
 
 pub struct InsertValidator;
@@ -10,7 +10,7 @@ impl InsertValidator {
     pub fn needs_validation(query: &str) -> bool {
         query.contains('\'')
     }
-    
+
     /// Extract table name from INSERT query
     pub fn extract_table_name(query: &str) -> Option<String> {
         let re = Regex::new(r"(?i)INSERT\s+INTO\s+(\w+)").ok()?;
@@ -18,7 +18,7 @@ impl InsertValidator {
             .and_then(|cap| cap.get(1))
             .map(|m| m.as_str().to_string())
     }
-    
+
     /// Note: Full validation would be implemented with proper SQL parsing
     /// For now, we rely on SQLite's CHECK constraints or trigger-based validation
     pub fn validate_insert(
@@ -39,7 +39,7 @@ impl UpdateValidator {
     pub fn needs_validation(query: &str) -> bool {
         query.contains('\'')
     }
-    
+
     /// Extract table name from UPDATE query
     pub fn extract_table_name(query: &str) -> Option<String> {
         let re = Regex::new(r"(?i)UPDATE\s+(\w+)").ok()?;
@@ -47,7 +47,7 @@ impl UpdateValidator {
             .and_then(|cap| cap.get(1))
             .map(|m| m.as_str().to_string())
     }
-    
+
     /// Note: Full validation would be implemented with proper SQL parsing
     /// For now, we rely on SQLite's CHECK constraints or trigger-based validation
     pub fn validate_update(

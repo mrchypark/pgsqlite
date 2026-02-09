@@ -1,10 +1,10 @@
-use crate::types::{generate_uuid_v4, UuidHandler};
+use crate::types::{UuidHandler, generate_uuid_v4};
 use once_cell::sync::Lazy;
 use rand::RngCore;
 use rusqlite::functions::FunctionFlags;
 use rusqlite::{Connection, Result};
-use uuid::v1::{Context, Timestamp};
 use uuid::Uuid;
+use uuid::v1::{Context, Timestamp};
 
 /// Register UUID-related functions in SQLite
 pub fn register_uuid_functions(conn: &Connection) -> Result<()> {

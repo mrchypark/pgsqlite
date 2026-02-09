@@ -1,8 +1,8 @@
-use crate::types::{DecimalHandler, PgType};
 use crate::PgSqliteError;
+use crate::types::{DecimalHandler, PgType};
 use bytes::{BufMut, BytesMut};
-use rust_decimal::prelude::*;
 use rust_decimal::Decimal;
+use rust_decimal::prelude::*;
 use std::convert::TryInto;
 use std::str::FromStr;
 use tracing::debug;
@@ -1670,7 +1670,7 @@ mod tests {
         assert_eq!(ipv6_inet[1], 128); // default prefix for IPv6
         assert_eq!(ipv6_inet[2], 0); // is_cidr = false
         assert_eq!(ipv6_inet[3], 16); // address length
-                                      // Last two bytes should be [0, 1] for ::1
+        // Last two bytes should be [0, 1] for ::1
         assert_eq!(&ipv6_inet[18..20], &[0, 1]);
     }
 
