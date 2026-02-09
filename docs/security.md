@@ -6,12 +6,13 @@ This document describes the security-related behavior that exists in the current
 
 ### TCP Listener
 
-- By default, pgsqlite listens on `0.0.0.0:<port>` (see `--port` / `PGSQLITE_PORT`).
-- There is currently no bind-address configuration option. If you need to restrict exposure, use firewall rules, container/network policy, or disable TCP entirely.
+- By default, pgsqlite listens on `127.0.0.1:<port>` (see `--listen-addr` / `PGSQLITE_LISTEN_ADDR`, `--port` / `PGSQLITE_PORT`).
+- If you listen on a non-loopback address, `--auth trust` is rejected unless you explicitly allow it via `--insecure-allow-remote-trust` (INSECURE). Prefer `--auth password` for remote access.
 
 ### Unix Domain Socket (Unix Only)
 
 - On Unix platforms, pgsqlite creates a PostgreSQL-compatible socket file named `.s.PGSQL.<port>` in `--socket-dir` (default: `/tmp`).
+- The Unix socket file permissions default to `0700` and can be configured via `--socket-permissions` / `PGSQLITE_SOCKET_PERMISSIONS`.
 - `--no-tcp` disables the TCP listener and leaves Unix sockets as the only listener.
 
 See `docs/unix-sockets.md` for connection examples.
