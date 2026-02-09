@@ -25,7 +25,9 @@ async fn test_array_binary_protocol_support() {
         while let Ok((stream, client_addr)) = listener.accept().await {
             let db_clone = db_handler.clone();
             tokio::spawn(async move {
-                if let Err(e) = handle_test_connection_with_pool(stream, client_addr, db_clone).await {
+                if let Err(e) =
+                    handle_test_connection_with_pool(stream, client_addr, db_clone).await
+                {
                     eprintln!("Connection error: {}", e);
                 }
             });
@@ -34,9 +36,14 @@ async fn test_array_binary_protocol_support() {
 
     // Connect client in binary mode
     let (client, connection) = tokio_postgres::connect(
-        &format!("host=127.0.0.1 port={} user=postgres dbname=test", addr.port()),
+        &format!(
+            "host=127.0.0.1 port={} user=postgres dbname=test",
+            addr.port()
+        ),
         NoTls,
-    ).await.unwrap();
+    )
+    .await
+    .unwrap();
 
     // Spawn connection task
     tokio::spawn(async move {
@@ -46,7 +53,9 @@ async fn test_array_binary_protocol_support() {
     });
 
     // Create table with array columns
-    client.execute("
+    client
+        .execute(
+            "
         CREATE TABLE array_test (
             id INTEGER PRIMARY KEY,
             bool_array BOOLEAN[],
@@ -59,7 +68,11 @@ async fn test_array_binary_protocol_support() {
             varchar_array VARCHAR(50)[],
             numeric_array NUMERIC(10,2)[]
         )
-    ", &[]).await.unwrap();
+    ",
+            &[],
+        )
+        .await
+        .unwrap();
 
     // Insert test data
     client.execute("
@@ -118,16 +131,29 @@ async fn test_array_binary_protocol_support() {
     // Test double precision array
     let float8_array: Vec<f64> = row.get(5);
     assert_eq!(float8_array, vec![1.111, 2.222, 3.333]);
-    println!("✅ DOUBLE PRECISION[] binary encoding works: {:?}", float8_array);
+    println!(
+        "✅ DOUBLE PRECISION[] binary encoding works: {:?}",
+        float8_array
+    );
 
     // Test text array
     let text_array: Vec<String> = row.get(6);
-    assert_eq!(text_array, vec!["hello".to_string(), "world".to_string(), "test".to_string()]);
+    assert_eq!(
+        text_array,
+        vec!["hello".to_string(), "world".to_string(), "test".to_string()]
+    );
     println!("✅ TEXT[] binary encoding works: {:?}", text_array);
 
     // Test varchar array
     let varchar_array: Vec<String> = row.get(7);
-    assert_eq!(varchar_array, vec!["varchar1".to_string(), "varchar2".to_string(), "varchar3".to_string()]);
+    assert_eq!(
+        varchar_array,
+        vec![
+            "varchar1".to_string(),
+            "varchar2".to_string(),
+            "varchar3".to_string()
+        ]
+    );
     println!("✅ VARCHAR[] binary encoding works: {:?}", varchar_array);
 
     // Test numeric array - using rust_decimal for precision
@@ -165,7 +191,9 @@ async fn test_array_binary_with_nulls() {
         while let Ok((stream, client_addr)) = listener.accept().await {
             let db_clone = db_handler.clone();
             tokio::spawn(async move {
-                if let Err(e) = handle_test_connection_with_pool(stream, client_addr, db_clone).await {
+                if let Err(e) =
+                    handle_test_connection_with_pool(stream, client_addr, db_clone).await
+                {
                     eprintln!("Connection error: {}", e);
                 }
             });
@@ -174,9 +202,14 @@ async fn test_array_binary_with_nulls() {
 
     // Connect client
     let (client, connection) = tokio_postgres::connect(
-        &format!("host=127.0.0.1 port={} user=postgres dbname=test", addr.port()),
+        &format!(
+            "host=127.0.0.1 port={} user=postgres dbname=test",
+            addr.port()
+        ),
         NoTls,
-    ).await.unwrap();
+    )
+    .await
+    .unwrap();
 
     // Spawn connection task
     tokio::spawn(async move {
@@ -186,24 +219,42 @@ async fn test_array_binary_with_nulls() {
     });
 
     // Create table with array columns
-    client.execute("
+    client
+        .execute(
+            "
         CREATE TABLE array_null_test (
             id INTEGER PRIMARY KEY,
             int_array_with_nulls INTEGER[]
         )
-    ", &[]).await.unwrap();
+    ",
+            &[],
+        )
+        .await
+        .unwrap();
 
     // Insert array with NULL values (represented as JSON with null)
-    client.execute("
+    client
+        .execute(
+            "
         INSERT INTO array_null_test (id, int_array_with_nulls)
         VALUES (1, '[1, null, 3]'::INTEGER[])
-    ", &[]).await.unwrap();
+    ",
+            &[],
+        )
+        .await
+        .unwrap();
 
     // Test binary format with NULLs
     println!("Preparing SELECT statement for array with nulls...");
-    let stmt = client.prepare_typed("
+    let stmt = client
+        .prepare_typed(
+            "
         SELECT int_array_with_nulls FROM array_null_test WHERE id = $1
-    ", &[Type::INT4]).await.unwrap();
+    ",
+            &[Type::INT4],
+        )
+        .await
+        .unwrap();
 
     // Check what type OID the server reported for the column
     println!("Statement columns: {:?}", stmt.columns());
@@ -216,7 +267,10 @@ async fn test_array_binary_with_nulls() {
     // Test integer array with nulls
     let int_array: Vec<Option<i32>> = row.get(0);
     assert_eq!(int_array, vec![Some(1), None, Some(3)]);
-    println!("✅ INTEGER[] with NULLs binary encoding works: {:?}", int_array);
+    println!(
+        "✅ INTEGER[] with NULLs binary encoding works: {:?}",
+        int_array
+    );
 
     println!("🎉 Array with NULLs binary protocol test passed!");
 }
@@ -242,7 +296,9 @@ async fn test_empty_arrays_binary() {
         while let Ok((stream, client_addr)) = listener.accept().await {
             let db_clone = db_handler.clone();
             tokio::spawn(async move {
-                if let Err(e) = handle_test_connection_with_pool(stream, client_addr, db_clone).await {
+                if let Err(e) =
+                    handle_test_connection_with_pool(stream, client_addr, db_clone).await
+                {
                     eprintln!("Connection error: {}", e);
                 }
             });
@@ -251,9 +307,14 @@ async fn test_empty_arrays_binary() {
 
     // Connect client
     let (client, connection) = tokio_postgres::connect(
-        &format!("host=127.0.0.1 port={} user=postgres dbname=test", addr.port()),
+        &format!(
+            "host=127.0.0.1 port={} user=postgres dbname=test",
+            addr.port()
+        ),
         NoTls,
-    ).await.unwrap();
+    )
+    .await
+    .unwrap();
 
     // Spawn connection task
     tokio::spawn(async move {
@@ -263,24 +324,42 @@ async fn test_empty_arrays_binary() {
     });
 
     // Create table
-    client.execute("
+    client
+        .execute(
+            "
         CREATE TABLE empty_array_test (
             id INTEGER PRIMARY KEY,
             empty_int_array INTEGER[],
             empty_text_array TEXT[]
         )
-    ", &[]).await.unwrap();
+    ",
+            &[],
+        )
+        .await
+        .unwrap();
 
     // Insert empty arrays
-    client.execute("
+    client
+        .execute(
+            "
         INSERT INTO empty_array_test (id, empty_int_array, empty_text_array)
         VALUES (1, ARRAY[]::INTEGER[], ARRAY[]::TEXT[])
-    ", &[]).await.unwrap();
+    ",
+            &[],
+        )
+        .await
+        .unwrap();
 
     // Test binary format
-    let stmt = client.prepare_typed("
+    let stmt = client
+        .prepare_typed(
+            "
         SELECT empty_int_array, empty_text_array FROM empty_array_test WHERE id = $1
-    ", &[Type::INT4]).await.unwrap();
+    ",
+            &[Type::INT4],
+        )
+        .await
+        .unwrap();
 
     let rows = client.query(&stmt, &[&1i32]).await.unwrap();
 
@@ -290,11 +369,17 @@ async fn test_empty_arrays_binary() {
     // Test empty arrays
     let empty_int_array: Vec<i32> = row.get(0);
     assert_eq!(empty_int_array, Vec::<i32>::new());
-    println!("✅ Empty INTEGER[] binary encoding works: {:?}", empty_int_array);
+    println!(
+        "✅ Empty INTEGER[] binary encoding works: {:?}",
+        empty_int_array
+    );
 
     let empty_text_array: Vec<String> = row.get(1);
     assert_eq!(empty_text_array, Vec::<String>::new());
-    println!("✅ Empty TEXT[] binary encoding works: {:?}", empty_text_array);
+    println!(
+        "✅ Empty TEXT[] binary encoding works: {:?}",
+        empty_text_array
+    );
 
     println!("🎉 Empty arrays binary protocol test passed!");
 }

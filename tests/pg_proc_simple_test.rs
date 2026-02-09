@@ -9,7 +9,10 @@ async fn test_pg_proc_view_exists() {
     let db_handler = Arc::new(DbHandler::new(db_path.to_str().unwrap()).unwrap());
 
     // Test direct SQLite query to pg_proc view
-    let result = db_handler.query("SELECT COUNT(*) FROM pg_proc").await.unwrap();
+    let result = db_handler
+        .query("SELECT COUNT(*) FROM pg_proc")
+        .await
+        .unwrap();
     assert!(!result.rows.is_empty(), "Should get a count result");
 
     let count_bytes = result.rows[0][0].as_ref().unwrap();
@@ -20,7 +23,10 @@ async fn test_pg_proc_view_exists() {
     println!("✅ pg_proc view contains {} functions", count);
 
     // Test specific function lookup
-    let result = db_handler.query("SELECT proname, prokind FROM pg_proc WHERE proname = 'length' LIMIT 1").await.unwrap();
+    let result = db_handler
+        .query("SELECT proname, prokind FROM pg_proc WHERE proname = 'length' LIMIT 1")
+        .await
+        .unwrap();
     assert!(!result.rows.is_empty(), "Should find length function");
 
     let proname_bytes = result.rows[0][0].as_ref().unwrap();

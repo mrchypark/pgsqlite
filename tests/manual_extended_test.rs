@@ -1,6 +1,6 @@
-use tokio::net::TcpStream;
+use bytes::{BufMut, BytesMut};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use bytes::{BytesMut, BufMut};
+use tokio::net::TcpStream;
 use uuid::Uuid;
 
 #[tokio::test]
@@ -9,30 +9,42 @@ async fn test_manual_extended_protocol() {
     let test_id = Uuid::new_v4().to_string().replace("-", "");
     let db_path = format!("/tmp/pgsqlite_test_{test_id}.db");
     let db_path_clone = db_path.clone();
-    
+
     // Start test server
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
-    
+
     let server_handle = tokio::spawn(async move {
-        let db_handler = std::sync::Arc::new(
-            pgsqlite::session::DbHandler::new(&db_path_clone).unwrap()
-        );
-        
+        let db_handler =
+            std::sync::Arc::new(pgsqlite::session::DbHandler::new(&db_path_clone).unwrap());
+
         // Initialize test data
-        db_handler.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, age INTEGER)").await.unwrap();
-        db_handler.execute("INSERT INTO users (id, name, age) VALUES (1, 'Alice', 30)").await.unwrap();
-        db_handler.execute("INSERT INTO users (id, name, age) VALUES (2, 'Bob', 25)").await.unwrap();
-        
+        db_handler
+            .execute("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, age INTEGER)")
+            .await
+            .unwrap();
+        db_handler
+            .execute("INSERT INTO users (id, name, age) VALUES (1, 'Alice', 30)")
+            .await
+            .unwrap();
+        db_handler
+            .execute("INSERT INTO users (id, name, age) VALUES (2, 'Bob', 25)")
+            .await
+            .unwrap();
+
         let (stream, addr) = listener.accept().await.unwrap();
-        pgsqlite::handle_test_connection_with_pool(stream, addr, db_handler).await.unwrap();
+        pgsqlite::handle_test_connection_with_pool(stream, addr, db_handler)
+            .await
+            .unwrap();
     });
-    
+
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-    
+
     // Connect as client
-    let mut stream = TcpStream::connect(format!("127.0.0.1:{port}")).await.unwrap();
-    
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{port}"))
+        .await
+        .unwrap();
+
     // Send startup message
     let mut startup = BytesMut::new();
     startup.put_i32(0); // Length placeholder
@@ -40,14 +52,14 @@ async fn test_manual_extended_protocol() {
     startup.put(&b"user\0postgres\0database\0test\0\0"[..]);
     let len = startup.len() as i32;
     startup[0..4].copy_from_slice(&len.to_be_bytes());
-    
+
     stream.write_all(&startup).await.unwrap();
-    
+
     // Read authentication response and other startup messages
     let mut buf = vec![0u8; 4096];
     let n = stream.read(&mut buf).await.unwrap();
     println!("Received {n} bytes in startup response");
-    
+
     // Test 1: Parse a query with parameter
     println!("\nTest 1: Parse query with parameter");
     let mut parse_msg = BytesMut::new();
@@ -58,7 +70,7 @@ async fn test_manual_extended_protocol() {
     parse_msg.put_i16(0); // No parameter types
     let len = (parse_msg.len() - 1) as i32;
     parse_msg[1..5].copy_from_slice(&len.to_be_bytes());
-    
+
     // Send Describe
     let mut describe_msg = BytesMut::new();
     describe_msg.put_u8(b'D'); // Describe
@@ -67,20 +79,20 @@ async fn test_manual_extended_protocol() {
     describe_msg.put(&b"stmt1\0"[..]);
     let len = (describe_msg.len() - 1) as i32;
     describe_msg[1..5].copy_from_slice(&len.to_be_bytes());
-    
+
     // Send Sync
     let mut sync_msg = BytesMut::new();
     sync_msg.put_u8(b'S'); // Sync
     sync_msg.put_i32(4); // Length
-    
+
     stream.write_all(&parse_msg).await.unwrap();
     stream.write_all(&describe_msg).await.unwrap();
     stream.write_all(&sync_msg).await.unwrap();
-    
+
     // Read Parse/Describe response
     let n = stream.read(&mut buf).await.unwrap();
     println!("Received {n} bytes for Parse/Describe");
-    
+
     // Test 2: Bind and Execute
     println!("\nTest 2: Bind and Execute");
     let mut bind_msg = BytesMut::new();
@@ -95,7 +107,7 @@ async fn test_manual_extended_protocol() {
     bind_msg.put_i16(0); // No result format codes
     let len = (bind_msg.len() - 1) as i32;
     bind_msg[1..5].copy_from_slice(&len.to_be_bytes());
-    
+
     // Execute
     let mut execute_msg = BytesMut::new();
     execute_msg.put_u8(b'E'); // Execute
@@ -104,25 +116,32 @@ async fn test_manual_extended_protocol() {
     execute_msg.put_i32(0); // No limit
     let len = (execute_msg.len() - 1) as i32;
     execute_msg[1..5].copy_from_slice(&len.to_be_bytes());
-    
+
     stream.write_all(&bind_msg).await.unwrap();
     stream.write_all(&execute_msg).await.unwrap();
     stream.write_all(&sync_msg).await.unwrap();
-    
+
     // Read Bind/Execute response
     let n = stream.read(&mut buf).await.unwrap();
     println!("Received {n} bytes for Bind/Execute");
-    
+
     // Parse response to verify we got data
     let mut offset = 0;
     while offset < n {
         let msg_type = buf[offset];
         offset += 1;
-        
-        if offset + 4 > n { break; }
-        let msg_len = i32::from_be_bytes([buf[offset], buf[offset+1], buf[offset+2], buf[offset+3]]) as usize;
+
+        if offset + 4 > n {
+            break;
+        }
+        let msg_len = i32::from_be_bytes([
+            buf[offset],
+            buf[offset + 1],
+            buf[offset + 2],
+            buf[offset + 3],
+        ]) as usize;
         offset += 4;
-        
+
         match msg_type {
             b'2' => println!("BindComplete"),
             b'T' => {
@@ -136,25 +155,25 @@ async fn test_manual_extended_protocol() {
                 assert!(msg_len > 2);
             }
             b'C' => {
-                let tag = std::str::from_utf8(&buf[offset..offset+msg_len-5]).unwrap();
+                let tag = std::str::from_utf8(&buf[offset..offset + msg_len - 5]).unwrap();
                 println!("CommandComplete: {tag}");
                 assert!(tag.starts_with("SELECT"));
             }
             b'Z' => println!("ReadyForQuery"),
             _ => println!("Message type: {} ({})", msg_type as char, msg_type),
         }
-        
+
         offset += msg_len - 4;
     }
-    
+
     // Send Terminate
     let mut terminate_msg = BytesMut::new();
     terminate_msg.put_u8(b'X'); // Terminate
     terminate_msg.put_i32(4); // Length
     stream.write_all(&terminate_msg).await.unwrap();
-    
+
     server_handle.abort();
-    
+
     println!("\nTest completed successfully!");
 
     // Clean up

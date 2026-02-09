@@ -38,7 +38,10 @@ fn test_sql_injection_detector_tautology() {
     // Verify it's the right kind of error
     if let Err(e) = result {
         let error_msg = format!("{:?}", e);
-        assert!(error_msg.contains("tautology"), "Error should mention tautology");
+        assert!(
+            error_msg.contains("tautology"),
+            "Error should mention tautology"
+        );
     }
 }
 
@@ -49,12 +52,20 @@ fn test_sql_injection_detector_dangerous_function() {
     // Test dangerous function usage - should be rejected
     let dangerous_query = "SELECT exec('DROP TABLE users')";
     let result = detector.analyze_query(dangerous_query);
-    assert!(result.is_err(), "Dangerous function query should be rejected");
+    assert!(
+        result.is_err(),
+        "Dangerous function query should be rejected"
+    );
 
     // Verify it's the right kind of error
     if let Err(e) = result {
         let error_msg = format!("{:?}", e);
-        assert!(error_msg.contains("Dangerous function") || error_msg.contains("dangerous") || error_msg.contains("exec"), "Error should mention dangerous function");
+        assert!(
+            error_msg.contains("Dangerous function")
+                || error_msg.contains("dangerous")
+                || error_msg.contains("exec"),
+            "Error should mention dangerous function"
+        );
     }
 }
 
@@ -80,7 +91,10 @@ fn test_sql_injection_detector_unions_excessive() {
     // Verify it's the right kind of error
     if let Err(e) = result {
         let error_msg = format!("{:?}", e);
-        assert!(error_msg.contains("UNION") || error_msg.contains("union"), "Error should mention unions");
+        assert!(
+            error_msg.contains("UNION") || error_msg.contains("union"),
+            "Error should mention unions"
+        );
     }
 }
 

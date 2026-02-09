@@ -1,10 +1,10 @@
-use std::sync::Arc;
-use pgsqlite::session::DbHandler;
-use pgsqlite::query::QueryExecutor;
-use pgsqlite::session::SessionState;
 use pgsqlite::protocol::PostgresCodec;
-use tokio_util::codec::Framed;
+use pgsqlite::query::QueryExecutor;
+use pgsqlite::session::DbHandler;
+use pgsqlite::session::SessionState;
 use std::io::Cursor;
+use std::sync::Arc;
+use tokio_util::codec::Framed;
 
 #[tokio::test]
 async fn test_create_database_success() {
@@ -19,13 +19,9 @@ async fn test_create_database_success() {
     let mut framed = Framed::new(cursor, PostgresCodec::new());
 
     // Test CREATE DATABASE command
-    let result = QueryExecutor::execute_query(
-        &mut framed,
-        &db,
-        &session,
-        "CREATE DATABASE testdb",
-        None
-    ).await;
+    let result =
+        QueryExecutor::execute_query(&mut framed, &db, &session, "CREATE DATABASE testdb", None)
+            .await;
 
     assert!(result.is_ok(), "CREATE DATABASE should succeed");
 
@@ -36,7 +32,10 @@ async fn test_create_database_success() {
 #[tokio::test]
 async fn test_create_database_with_options() {
     // Create a temporary file database for the test
-    let temp_file = format!("/tmp/test_create_database_options_{}.db", uuid::Uuid::new_v4());
+    let temp_file = format!(
+        "/tmp/test_create_database_options_{}.db",
+        uuid::Uuid::new_v4()
+    );
     let db = Arc::new(DbHandler::new(&temp_file).expect("Failed to create database"));
     let session = Arc::new(SessionState::new("test".to_string(), "test".to_string()));
 
@@ -51,10 +50,14 @@ async fn test_create_database_with_options() {
         &db,
         &session,
         "CREATE DATABASE testdb WITH ENCODING 'UTF8'",
-        None
-    ).await;
+        None,
+    )
+    .await;
 
-    assert!(result.is_ok(), "CREATE DATABASE with options should succeed");
+    assert!(
+        result.is_ok(),
+        "CREATE DATABASE with options should succeed"
+    );
 
     // Clean up
     std::fs::remove_file(&temp_file).ok();
@@ -82,15 +85,13 @@ async fn test_create_database_case_insensitive() {
     ];
 
     for query in test_cases {
-        let result = QueryExecutor::execute_query(
-            &mut framed,
-            &db,
-            &session,
-            query,
-            None
-        ).await;
+        let result = QueryExecutor::execute_query(&mut framed, &db, &session, query, None).await;
 
-        assert!(result.is_ok(), "CREATE DATABASE should succeed for query: {}", query);
+        assert!(
+            result.is_ok(),
+            "CREATE DATABASE should succeed for query: {}",
+            query
+        );
     }
 
     // Clean up

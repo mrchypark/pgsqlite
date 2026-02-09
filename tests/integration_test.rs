@@ -1,5 +1,5 @@
 use tokio::net::TcpListener;
-use tokio::time::{timeout, Duration};
+use tokio::time::{Duration, timeout};
 
 #[tokio::test]
 async fn test_basic_protocol() {
@@ -7,69 +7,78 @@ async fn test_basic_protocol() {
     let _ = tracing_subscriber::fmt()
         .with_env_filter("debug")
         .try_init();
-    
+
     // Start test server
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     println!("Test server listening on port {port}");
-    
+
     let server_handle = tokio::spawn(async move {
         // Create database handler with a temporary file database to ensure persistence
         let temp_db_path = format!("/tmp/pgsqlite_test_{}.db", std::process::id());
-        let db_handler = std::sync::Arc::new(
-            pgsqlite::session::DbHandler::new(&temp_db_path).unwrap()
-        );
-        
+        let db_handler =
+            std::sync::Arc::new(pgsqlite::session::DbHandler::new(&temp_db_path).unwrap());
+
         // Initialize test data
-        db_handler.execute("CREATE TABLE test (id INTEGER PRIMARY KEY, name TEXT)").await.unwrap();
-        db_handler.execute("INSERT INTO test (id, name) VALUES (1, 'Alice'), (2, 'Bob')").await.unwrap();
-        
+        db_handler
+            .execute("CREATE TABLE test (id INTEGER PRIMARY KEY, name TEXT)")
+            .await
+            .unwrap();
+        db_handler
+            .execute("INSERT INTO test (id, name) VALUES (1, 'Alice'), (2, 'Bob')")
+            .await
+            .unwrap();
+
         println!("Test data initialized");
-        
+
         // Accept connection
         let (stream, addr) = listener.accept().await.unwrap();
         println!("Accepted connection from {addr}");
-        
+
         // Handle connection
-        pgsqlite::handle_test_connection_with_pool(stream, addr, db_handler).await.unwrap();
+        pgsqlite::handle_test_connection_with_pool(stream, addr, db_handler)
+            .await
+            .unwrap();
     });
-    
+
     // Give server time to start
     tokio::time::sleep(Duration::from_millis(200)).await;
-    
+
     // Connect with tokio-postgres
     println!("Connecting to test server on port {port}");
-    
+
     let connect_result = timeout(
         Duration::from_secs(5),
         tokio_postgres::connect(
             &format!("host=localhost port={port} dbname=test user=testuser"),
             tokio_postgres::NoTls,
-        )
-    ).await;
-    
+        ),
+    )
+    .await;
+
     match connect_result {
         Ok(Ok((client, connection))) => {
             println!("Connected successfully");
-            
+
             // Spawn connection handler
             tokio::spawn(async move {
                 if let Err(e) = connection.await {
                     eprintln!("Connection error: {e}");
                 }
             });
-            
+
             // Try a simple query using simple_query to avoid extended protocol
             println!("Executing query");
             let query_result = timeout(
                 Duration::from_secs(2),
-                client.simple_query("SELECT id, name FROM test ORDER BY id")
-            ).await;
-            
+                client.simple_query("SELECT id, name FROM test ORDER BY id"),
+            )
+            .await;
+
             match query_result {
                 Ok(Ok(messages)) => {
                     println!("Query successful, got {} messages", messages.len());
-                    
+
                     // simple_query returns SimpleQueryMessage enums
                     let mut row_count = 0;
                     for msg in &messages {
@@ -99,9 +108,9 @@ async fn test_basic_protocol() {
         Ok(Err(e)) => panic!("Connection failed: {e}"),
         Err(_) => panic!("Connection timed out"),
     }
-    
+
     server_handle.abort();
-    
+
     // Clean up temporary database file
     let temp_db_path = format!("/tmp/pgsqlite_test_{}.db", std::process::id());
     let _ = std::fs::remove_file(&temp_db_path);

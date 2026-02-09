@@ -8,25 +8,32 @@ async fn test_information_schema_key_column_usage_basic() {
     let server = setup_test_server_with_init(|db| {
         Box::pin(async move {
             // Create test tables with constraints
-            db.execute(r#"
+            db.execute(
+                r#"
                 CREATE TABLE users (
                     id INTEGER PRIMARY KEY,
                     name VARCHAR(100) NOT NULL,
                     email VARCHAR(255) UNIQUE
                 )
-            "#).await?;
+            "#,
+            )
+            .await?;
 
-            db.execute(r#"
+            db.execute(
+                r#"
                 CREATE TABLE orders (
                     id INTEGER PRIMARY KEY,
                     user_id INTEGER REFERENCES users(id),
                     amount DECIMAL(10,2)
                 )
-            "#).await?;
+            "#,
+            )
+            .await?;
 
             Ok(())
         })
-    }).await;
+    })
+    .await;
     let client = &server.client;
 
     // Query information_schema.key_column_usage
@@ -45,14 +52,20 @@ async fn test_information_schema_key_column_usage_basic() {
         let column_name: &str = row.get(2);
         let ordinal_position: i32 = row.get(3);
 
-        found_constraints.insert(format!("{}:{}:{}", table_name, constraint_name, column_name));
+        found_constraints.insert(format!(
+            "{}:{}:{}",
+            table_name, constraint_name, column_name
+        ));
 
         // Ordinal position should be >= 1
         assert!(ordinal_position >= 1, "Ordinal position should be 1-based");
     }
 
     // We should have at least primary key constraints
-    assert!(found_constraints.len() >= 2, "Should have at least primary key constraints for both tables");
+    assert!(
+        found_constraints.len() >= 2,
+        "Should have at least primary key constraints for both tables"
+    );
 }
 
 #[tokio::test]
@@ -61,16 +74,20 @@ async fn test_information_schema_key_column_usage_with_filter() {
 
     let server = setup_test_server_with_init(|db| {
         Box::pin(async move {
-            db.execute(r#"
+            db.execute(
+                r#"
                 CREATE TABLE test_table (
                     id INTEGER PRIMARY KEY,
                     code VARCHAR(10) UNIQUE,
                     description TEXT
                 )
-            "#).await?;
+            "#,
+            )
+            .await?;
             Ok(())
         })
-    }).await;
+    })
+    .await;
     let client = &server.client;
 
     // Query with table filter
@@ -86,7 +103,10 @@ async fn test_information_schema_key_column_usage_with_filter() {
     }
 
     // Should have at least primary key constraint
-    assert!(!rows.is_empty(), "Should have key constraints for test_table");
+    assert!(
+        !rows.is_empty(),
+        "Should have key constraints for test_table"
+    );
 }
 
 #[tokio::test]
@@ -95,19 +115,29 @@ async fn test_information_schema_key_column_usage_wildcard() {
 
     let server = setup_test_server_with_init(|db| {
         Box::pin(async move {
-            db.execute(r#"
+            db.execute(
+                r#"
                 CREATE TABLE simple_pk (
                     id INTEGER PRIMARY KEY,
                     name TEXT
                 )
-            "#).await?;
+            "#,
+            )
+            .await?;
             Ok(())
         })
-    }).await;
+    })
+    .await;
     let client = &server.client;
 
     // Query with wildcard
-    let rows = client.query("SELECT * FROM information_schema.key_column_usage WHERE table_name = 'simple_pk'", &[]).await.unwrap();
+    let rows = client
+        .query(
+            "SELECT * FROM information_schema.key_column_usage WHERE table_name = 'simple_pk'",
+            &[],
+        )
+        .await
+        .unwrap();
 
     // Should return all 9 standard columns
     if !rows.is_empty() {

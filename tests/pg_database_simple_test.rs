@@ -9,7 +9,10 @@ async fn test_pg_database_datname_basic() {
     let client = &server.client;
 
     // Test the most important query: SELECT datname FROM pg_database
-    let rows = client.query("SELECT datname FROM pg_database", &[]).await.unwrap();
+    let rows = client
+        .query("SELECT datname FROM pg_database", &[])
+        .await
+        .unwrap();
 
     assert_eq!(rows.len(), 1);
     let datname: &str = rows[0].get(0);
@@ -26,7 +29,10 @@ async fn test_pg_database_essential_columns() {
     let client = &server.client;
 
     // Test essential columns that ORMs typically use
-    let rows = client.query("SELECT oid, datname, datdba FROM pg_database", &[]).await.unwrap();
+    let rows = client
+        .query("SELECT oid, datname, datdba FROM pg_database", &[])
+        .await
+        .unwrap();
 
     assert_eq!(rows.len(), 1);
     let row = &rows[0];
@@ -39,7 +45,10 @@ async fn test_pg_database_essential_columns() {
     assert_eq!(datname, "main");
     assert_eq!(datdba, 10);
 
-    println!("✓ Essential pg_database columns: oid={}, datname={}, datdba={}", oid, datname, datdba);
+    println!(
+        "✓ Essential pg_database columns: oid={}, datname={}, datdba={}",
+        oid, datname, datdba
+    );
 }
 
 #[tokio::test]
@@ -50,7 +59,10 @@ async fn test_pg_catalog_pg_database() {
     let client = &server.client;
 
     // Test fully qualified name
-    let rows = client.query("SELECT datname FROM pg_catalog.pg_database", &[]).await.unwrap();
+    let rows = client
+        .query("SELECT datname FROM pg_catalog.pg_database", &[])
+        .await
+        .unwrap();
 
     assert_eq!(rows.len(), 1);
     let datname: &str = rows[0].get(0);
@@ -67,7 +79,10 @@ async fn test_database_existence_check() {
     let client = &server.client;
 
     // Common pattern: check if database exists
-    let rows = client.query("SELECT 1 FROM pg_database WHERE datname = 'main'", &[]).await.unwrap();
+    let rows = client
+        .query("SELECT 1 FROM pg_database WHERE datname = 'main'", &[])
+        .await
+        .unwrap();
 
     // This should return at least one row since 'main' database exists
     assert!(!rows.is_empty());
@@ -83,10 +98,13 @@ async fn test_sqlalchemy_compatibility() {
     let client = &server.client;
 
     // SQLAlchemy often runs this type of query
-    let rows = client.query(
-        "SELECT datname, datcollate, datctype FROM pg_database ORDER BY datname",
-        &[]
-    ).await.unwrap();
+    let rows = client
+        .query(
+            "SELECT datname, datcollate, datctype FROM pg_database ORDER BY datname",
+            &[],
+        )
+        .await
+        .unwrap();
 
     assert_eq!(rows.len(), 1);
     let datname: &str = rows[0].get(0);
@@ -97,5 +115,8 @@ async fn test_sqlalchemy_compatibility() {
     assert_eq!(datcollate, "en_US.UTF-8");
     assert_eq!(datctype, "en_US.UTF-8");
 
-    println!("✓ SQLAlchemy-style query successful: {} ({}, {})", datname, datcollate, datctype);
+    println!(
+        "✓ SQLAlchemy-style query successful: {} ({}, {})",
+        datname, datcollate, datctype
+    );
 }

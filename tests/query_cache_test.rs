@@ -1,5 +1,5 @@
 use tokio::net::TcpListener;
-use tokio::time::{timeout, Duration};
+use tokio::time::{Duration, timeout};
 use tokio_postgres::{NoTls, SimpleQueryMessage};
 
 #[tokio::test]
@@ -8,40 +8,44 @@ async fn test_query_cache_basic() {
     let _ = tracing_subscriber::fmt()
         .with_env_filter("debug")
         .try_init();
-    
+
     // Start test server
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     println!("Test server listening on port {port}");
-    
+
     let _server_handle = tokio::spawn(async move {
         // Create database handler
-        let db_handler = std::sync::Arc::new(
-            pgsqlite::session::DbHandler::new(":memory:").unwrap()
-        );
-        
+        let db_handler =
+            std::sync::Arc::new(pgsqlite::session::DbHandler::new(":memory:").unwrap());
+
         // Accept connection
         let (stream, addr) = listener.accept().await.unwrap();
         println!("Accepted connection from {addr}");
-        
+
         // Handle connection
-        pgsqlite::handle_test_connection_with_pool(stream, addr, db_handler).await.unwrap();
+        pgsqlite::handle_test_connection_with_pool(stream, addr, db_handler)
+            .await
+            .unwrap();
     });
-    
+
     // Give server time to start
     tokio::time::sleep(Duration::from_millis(200)).await;
-    
+
     // Connect with tokio-postgres
     println!("Connecting to test server on port {port}");
-    
+
     let (client, connection) = timeout(
         Duration::from_secs(5),
         tokio_postgres::connect(
             &format!("host=localhost port={port} dbname=test user=testuser"),
             NoTls,
-        )
-    ).await.unwrap().unwrap();
-    
+        ),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+
     tokio::spawn(async move {
         if let Err(e) = connection.await {
             eprintln!("Connection error: {e}");
@@ -90,7 +94,7 @@ async fn test_query_cache_basic() {
 
     println!("First query duration: {first_duration:?}");
     println!("Second query duration: {second_duration:?}");
-    
+
     // Cache hit should be faster (though in tests the difference might be small)
     // Just verify both queries returned correct results
     assert!(!rows.is_empty());
@@ -99,39 +103,41 @@ async fn test_query_cache_basic() {
 #[tokio::test]
 async fn test_query_cache_normalization() {
     // Enable debug logging
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter("info")
-        .try_init();
-    
+    let _ = tracing_subscriber::fmt().with_env_filter("info").try_init();
+
     // Start test server
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
-    
+
     let _server_handle = tokio::spawn(async move {
         // Create database handler
-        let db_handler = std::sync::Arc::new(
-            pgsqlite::session::DbHandler::new(":memory:").unwrap()
-        );
-        
+        let db_handler =
+            std::sync::Arc::new(pgsqlite::session::DbHandler::new(":memory:").unwrap());
+
         // Accept connection
         let (stream, addr) = listener.accept().await.unwrap();
-        
+
         // Handle connection
-        pgsqlite::handle_test_connection_with_pool(stream, addr, db_handler).await.unwrap();
+        pgsqlite::handle_test_connection_with_pool(stream, addr, db_handler)
+            .await
+            .unwrap();
     });
-    
+
     // Give server time to start
     tokio::time::sleep(Duration::from_millis(200)).await;
-    
+
     // Connect with tokio-postgres
     let (client, connection) = timeout(
         Duration::from_secs(5),
         tokio_postgres::connect(
             &format!("host=localhost port={port} dbname=test user=testuser"),
             NoTls,
-        )
-    ).await.unwrap().unwrap();
-    
+        ),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+
     tokio::spawn(async move {
         if let Err(e) = connection.await {
             eprintln!("Connection error: {e}");

@@ -1,4 +1,4 @@
-use pgsqlite::migration::{MigrationRunner, MIGRATIONS};
+use pgsqlite::migration::{MIGRATIONS, MigrationRunner};
 use rusqlite::Connection;
 use tempfile::TempDir;
 
@@ -14,10 +14,12 @@ fn test_fresh_database_migration() {
     // Check should fail on fresh database
     let check_result = runner.check_schema_version();
     assert!(check_result.is_err());
-    assert!(check_result
-        .unwrap_err()
-        .to_string()
-        .contains("Database schema is outdated"));
+    assert!(
+        check_result
+            .unwrap_err()
+            .to_string()
+            .contains("Database schema is outdated")
+    );
 
     // Now run migrations
     let conn = runner.into_connection();
@@ -26,13 +28,8 @@ fn test_fresh_database_migration() {
 
     // Should apply all migrations
     assert_eq!(applied.len(), MIGRATIONS.len());
-    assert_eq!(
-        applied,
-        vec![
-            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
-            25, 26, 27, 28
-        ]
-    );
+    let expected: Vec<u32> = MIGRATIONS.keys().copied().collect();
+    assert_eq!(applied, expected);
 
     // Verify schema version
     let conn = runner.into_connection();
@@ -43,7 +40,11 @@ fn test_fresh_database_migration() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(version, "28");
+    let target_version = *MIGRATIONS
+        .keys()
+        .max()
+        .expect("MIGRATIONS must not be empty");
+    assert_eq!(version, target_version.to_string());
 
     // Now check should pass
     let runner2 = MigrationRunner::new(conn);
@@ -79,7 +80,7 @@ fn test_idempotent_migrations() {
     let conn = Connection::open(&db_path).unwrap();
     let mut runner = MigrationRunner::new(conn);
     let applied = runner.run_pending_migrations().unwrap();
-    assert_eq!(applied.len(), 28);
+    assert_eq!(applied.len(), MIGRATIONS.len());
     drop(runner);
 
     // Second run - should apply nothing
@@ -114,30 +115,21 @@ fn test_existing_schema_detection() {
     let runner = MigrationRunner::new(conn);
     let check_result = runner.check_schema_version();
     assert!(check_result.is_err());
-    assert!(check_result
-        .unwrap_err()
-        .to_string()
-        .contains("Database schema is outdated"));
+    assert!(
+        check_result
+            .unwrap_err()
+            .to_string()
+            .contains("Database schema is outdated")
+    );
 
     // Run migrations
     let conn = runner.into_connection();
     let mut runner = MigrationRunner::new(conn);
     let applied = runner.run_pending_migrations().unwrap();
 
-    // Should recognize existing schema as version 1 and only apply versions 2-28
-    assert_eq!(applied.len(), 27);
-    assert_eq!(applied[0], 2);
-    assert_eq!(applied[1], 3);
-    assert_eq!(applied[2], 4);
-    assert_eq!(applied[3], 5);
-    assert_eq!(applied[4], 6);
-    assert_eq!(applied[5], 7);
-    assert_eq!(applied[6], 8);
-    assert_eq!(applied[7], 9);
-    assert_eq!(applied[8], 10);
-    assert_eq!(applied[9], 11);
-    assert_eq!(applied[10], 12);
-    assert_eq!(applied[26], 28);
+    // Should recognize existing schema as version 1 and only apply versions >1.
+    let expected: Vec<u32> = MIGRATIONS.keys().copied().filter(|v| *v > 1).collect();
+    assert_eq!(applied, expected);
 
     // Verify final version
     let conn = runner.into_connection();
@@ -148,7 +140,11 @@ fn test_existing_schema_detection() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(version, "28");
+    let target_version = *MIGRATIONS
+        .keys()
+        .max()
+        .expect("MIGRATIONS must not be empty");
+    assert_eq!(version, target_version.to_string());
 
     // Now check should pass
     let runner2 = MigrationRunner::new(conn);
@@ -174,7 +170,7 @@ fn test_migration_history() {
         .collect::<Result<Vec<_>, _>>()
         .unwrap();
 
-    assert_eq!(migrations.len(), 28);
+    assert_eq!(migrations.len(), MIGRATIONS.len());
     assert_eq!(
         migrations[0],
         (1, "initial_schema".to_string(), "completed".to_string())
@@ -239,9 +235,10 @@ fn test_migration_history() {
         migrations[10],
         (11, "fix_catalog_views".to_string(), "completed".to_string())
     );
+    let v26 = migrations.iter().find(|(v, _, _)| *v == 26).unwrap();
     assert_eq!(
-        migrations[25],
-        (
+        v26,
+        &(
             26,
             "enhanced_pg_attribute_support".to_string(),
             "completed".to_string()
@@ -265,7 +262,7 @@ fn test_concurrent_migration_lock() {
     // Insert a manual lock that hasn't expired
     let now = chrono::Utc::now().timestamp() as f64;
     conn.execute(
-        "INSERT OR REPLACE INTO __pgsqlite_migration_locks (id, locked_by, locked_at, expires_at) 
+        "INSERT OR REPLACE INTO __pgsqlite_migration_locks (id, locked_by, locked_at, expires_at)
          VALUES (1, 'test-process', ?1, ?2)",
         rusqlite::params![now, now + 300.0],
     )
@@ -278,10 +275,12 @@ fn test_concurrent_migration_lock() {
     let result = runner2.run_pending_migrations();
 
     assert!(result.is_err());
-    assert!(result
-        .unwrap_err()
-        .to_string()
-        .contains("Migration lock held"));
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("Migration lock held")
+    );
 }
 
 #[test]

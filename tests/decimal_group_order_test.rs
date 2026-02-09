@@ -1,18 +1,18 @@
-use pgsqlite::rewriter::DecimalQueryRewriter;
 use pgsqlite::metadata::TypeMetadata;
+use pgsqlite::rewriter::DecimalQueryRewriter;
 use rusqlite::Connection;
-use sqlparser::parser::Parser;
 use sqlparser::dialect::PostgreSqlDialect;
+use sqlparser::parser::Parser;
 
 fn setup_test_db() -> Connection {
     let conn = Connection::open_in_memory().unwrap();
-    
+
     // Initialize metadata table
     TypeMetadata::init(&conn).unwrap();
-    
+
     // Register decimal functions
     pgsqlite::functions::register_all_functions(&conn).unwrap();
-    
+
     // Create test tables
     conn.execute(
         "CREATE TABLE sales (
@@ -24,15 +24,17 @@ fn setup_test_db() -> Connection {
             discount TEXT
         )",
         [],
-    ).unwrap();
-    
+    )
+    .unwrap();
+
     conn.execute(
         "INSERT INTO __pgsqlite_schema (table_name, column_name, pg_type, sqlite_type) VALUES
          ('sales', 'price', 'NUMERIC', 'DECIMAL'),
          ('sales', 'discount', 'NUMERIC', 'DECIMAL')",
         [],
-    ).unwrap();
-    
+    )
+    .unwrap();
+
     conn.execute(
         "CREATE TABLE products (
             id INTEGER PRIMARY KEY,
@@ -41,23 +43,25 @@ fn setup_test_db() -> Connection {
             margin TEXT
         )",
         [],
-    ).unwrap();
-    
+    )
+    .unwrap();
+
     conn.execute(
         "INSERT INTO __pgsqlite_schema (table_name, column_name, pg_type, sqlite_type) VALUES
          ('products', 'cost', 'DOUBLE PRECISION', 'DECIMAL'),
          ('products', 'margin', 'REAL', 'DECIMAL')",
         [],
-    ).unwrap();
-    
+    )
+    .unwrap();
+
     conn
 }
 
 fn rewrite_query(conn: &Connection, sql: &str) -> Result<String, String> {
     let dialect = PostgreSqlDialect {};
-    let mut statements = Parser::parse_sql(&dialect, sql)
-        .map_err(|e| format!("Parse error: {e}"))?;
-    
+    let mut statements =
+        Parser::parse_sql(&dialect, sql).map_err(|e| format!("Parse error: {e}"))?;
+
     if let Some(stmt) = statements.first_mut() {
         let mut rewriter = DecimalQueryRewriter::new(conn);
         rewriter.rewrite_statement(stmt)?;
@@ -70,10 +74,10 @@ fn rewrite_query(conn: &Connection, sql: &str) -> Result<String, String> {
 #[test]
 fn test_group_by_decimal_column() {
     let conn = setup_test_db();
-    
+
     // Test GROUP BY with decimal column
-    let sql = "SELECT category, price, COUNT(*) 
-               FROM sales 
+    let sql = "SELECT category, price, COUNT(*)
+               FROM sales
                GROUP BY category, price";
     let result = rewrite_query(&conn, sql).unwrap();
     println!("GROUP BY decimal column rewritten to: {result}");
@@ -84,11 +88,11 @@ fn test_group_by_decimal_column() {
 #[test]
 fn test_group_by_with_decimal_having() {
     let conn = setup_test_db();
-    
+
     // Test GROUP BY with HAVING clause on decimal
-    let sql = "SELECT category, SUM(price) as total_price 
-               FROM sales 
-               GROUP BY category 
+    let sql = "SELECT category, SUM(price) as total_price
+               FROM sales
+               GROUP BY category
                HAVING SUM(price) > 1000";
     let result = rewrite_query(&conn, sql).unwrap();
     println!("GROUP BY with HAVING rewritten to: {result}");
@@ -98,7 +102,7 @@ fn test_group_by_with_decimal_having() {
 #[test]
 fn test_order_by_decimal_column() {
     let conn = setup_test_db();
-    
+
     // Test ORDER BY with decimal column
     let sql = "SELECT * FROM sales ORDER BY price DESC";
     let result = rewrite_query(&conn, sql).unwrap();
@@ -111,10 +115,10 @@ fn test_order_by_decimal_column() {
 #[test]
 fn test_order_by_decimal_expression() {
     let conn = setup_test_db();
-    
+
     // Test ORDER BY with decimal expression
-    let sql = "SELECT *, price * (1 - discount) as final_price 
-               FROM sales 
+    let sql = "SELECT *, price * (1 - discount) as final_price
+               FROM sales
                ORDER BY price * (1 - discount)";
     let result = rewrite_query(&conn, sql).unwrap();
     println!("ORDER BY decimal expression rewritten to: {result}");
@@ -125,7 +129,7 @@ fn test_order_by_decimal_expression() {
 #[test]
 fn test_order_by_multiple_columns_with_decimal() {
     let conn = setup_test_db();
-    
+
     // Test ORDER BY with multiple columns including decimal
     let sql = "SELECT * FROM sales ORDER BY category, price DESC, quantity";
     let result = rewrite_query(&conn, sql).unwrap();
@@ -135,11 +139,11 @@ fn test_order_by_multiple_columns_with_decimal() {
 #[test]
 fn test_order_by_aggregate_decimal() {
     let conn = setup_test_db();
-    
+
     // Test ORDER BY with aggregate on decimal column
-    let sql = "SELECT category, AVG(price) as avg_price 
-               FROM sales 
-               GROUP BY category 
+    let sql = "SELECT category, AVG(price) as avg_price
+               FROM sales
+               GROUP BY category
                ORDER BY AVG(price) DESC";
     let result = rewrite_query(&conn, sql).unwrap();
     println!("ORDER BY aggregate decimal rewritten to: {result}");
@@ -148,7 +152,7 @@ fn test_order_by_aggregate_decimal() {
 #[test]
 fn test_complex_group_order_query() {
     let conn = setup_test_db();
-    
+
     // Complex query with GROUP BY and ORDER BY on decimal columns
     let sql = "SELECT s.category, p.name, SUM(s.price * s.quantity) as revenue
                FROM sales s

@@ -1,9 +1,9 @@
+use pgsqlite::protocol::{
+    CircuitBreakerConfig, CircuitState, RateLimitConfig, RateLimiter, check_global_rate_limit,
+    record_global_failure,
+};
 use std::net::IpAddr;
 use std::time::Duration;
-use pgsqlite::protocol::{
-    RateLimiter, RateLimitConfig, CircuitBreakerConfig, CircuitState,
-    check_global_rate_limit, record_global_failure,
-};
 
 #[test]
 fn test_rate_limiter_basic_functionality() {
@@ -114,12 +114,20 @@ fn test_per_ip_isolation() {
 
     // Use up some of the requests for IP1 (but not all)
     for i in 1..=5 {
-        assert!(limiter.check_request(Some(ip1)).is_ok(), "IP1 request {} should work", i);
+        assert!(
+            limiter.check_request(Some(ip1)).is_ok(),
+            "IP1 request {} should work",
+            i
+        );
     }
 
     // IP2 should have its own separate quota
     for i in 1..=5 {
-        assert!(limiter.check_request(Some(ip2)).is_ok(), "IP2 request {} should work", i);
+        assert!(
+            limiter.check_request(Some(ip2)).is_ok(),
+            "IP2 request {} should work",
+            i
+        );
     }
 
     // Both IPs should still have quota left since per-IP limit is separate

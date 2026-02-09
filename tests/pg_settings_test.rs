@@ -7,9 +7,16 @@ async fn test_pg_settings_basic() {
     let db_path = temp_dir.path().join("test_pg_settings.db");
     let db_handler = Arc::new(DbHandler::new(db_path.to_str().unwrap()).unwrap());
 
-    let result = db_handler.query("SELECT name, setting FROM pg_settings").await.unwrap();
+    let result = db_handler
+        .query("SELECT name, setting FROM pg_settings")
+        .await
+        .unwrap();
 
-    assert!(result.rows.len() >= 10, "Should have many settings, got {}", result.rows.len());
+    assert!(
+        result.rows.len() >= 10,
+        "Should have many settings, got {}",
+        result.rows.len()
+    );
     assert_eq!(result.columns, vec!["name", "setting"]);
 
     let names: Vec<String> = result
@@ -22,8 +29,14 @@ async fn test_pg_settings_basic() {
         })
         .collect();
 
-    assert!(names.contains(&"server_version".to_string()), "Should contain server_version");
-    assert!(names.contains(&"server_encoding".to_string()), "Should contain server_encoding");
+    assert!(
+        names.contains(&"server_version".to_string()),
+        "Should contain server_version"
+    );
+    assert!(
+        names.contains(&"server_encoding".to_string()),
+        "Should contain server_encoding"
+    );
 
     println!("✅ pg_settings returns {} settings", result.rows.len());
 }
@@ -101,7 +114,10 @@ async fn test_pg_settings_common_settings() {
     let db_path = temp_dir.path().join("test_pg_settings4.db");
     let db_handler = Arc::new(DbHandler::new(db_path.to_str().unwrap()).unwrap());
 
-    let result = db_handler.query("SELECT name FROM pg_settings ORDER BY name").await.unwrap();
+    let result = db_handler
+        .query("SELECT name FROM pg_settings ORDER BY name")
+        .await
+        .unwrap();
 
     let names: Vec<String> = result
         .rows

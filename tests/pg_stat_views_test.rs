@@ -1,6 +1,6 @@
-use std::sync::Arc;
 use pgsqlite::session::DbHandler;
 use pgsqlite::session::SessionState;
+use std::sync::Arc;
 
 #[tokio::test]
 async fn test_pg_stat_activity_view() {
@@ -13,11 +13,23 @@ async fn test_pg_stat_activity_view() {
 
     // Test pg_stat_activity view basic structure
     let result = db.query("SELECT datid, datname, pid, usename, application_name, state, backend_type FROM pg_stat_activity").await;
-    assert!(result.is_ok(), "Failed to query pg_stat_activity: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "Failed to query pg_stat_activity: {:?}",
+        result
+    );
 
     let response = result.unwrap();
-    assert_eq!(response.columns.len(), 7, "pg_stat_activity should have 7 columns in this query");
-    assert_eq!(response.rows.len(), 1, "pg_stat_activity should return 1 row");
+    assert_eq!(
+        response.columns.len(),
+        7,
+        "pg_stat_activity should have 7 columns in this query"
+    );
+    assert_eq!(
+        response.rows.len(),
+        1,
+        "pg_stat_activity should return 1 row"
+    );
 
     // Verify column values
     if let Some(first_row) = response.rows.first() {
@@ -49,12 +61,24 @@ async fn test_pg_stat_database_view() {
     // Test will run migrations automatically via DbHandler::new
 
     // Test pg_stat_database view
-    let result = db.query("SELECT datid, datname, numbackends, xact_commit, xact_rollback FROM pg_stat_database").await;
-    assert!(result.is_ok(), "Failed to query pg_stat_database: {:?}", result);
+    let result = db
+        .query(
+            "SELECT datid, datname, numbackends, xact_commit, xact_rollback FROM pg_stat_database",
+        )
+        .await;
+    assert!(
+        result.is_ok(),
+        "Failed to query pg_stat_database: {:?}",
+        result
+    );
 
     let response = result.unwrap();
     assert_eq!(response.columns.len(), 5, "Query should return 5 columns");
-    assert_eq!(response.rows.len(), 1, "pg_stat_database should return 1 row");
+    assert_eq!(
+        response.rows.len(),
+        1,
+        "pg_stat_database should return 1 row"
+    );
 
     // Verify some key values
     if let Some(first_row) = response.rows.first() {
@@ -80,12 +104,18 @@ async fn test_pg_stat_user_tables_view() {
     // Test will run migrations automatically via DbHandler::new
 
     // Create a test table
-    let result = db.query("CREATE TABLE test_table (id INTEGER PRIMARY KEY, name TEXT)").await;
+    let result = db
+        .query("CREATE TABLE test_table (id INTEGER PRIMARY KEY, name TEXT)")
+        .await;
     assert!(result.is_ok(), "Failed to create test table: {:?}", result);
 
     // Test pg_stat_user_tables view
     let result = db.query("SELECT relid, schemaname, relname, seq_scan, n_tup_ins FROM pg_stat_user_tables WHERE relname = 'test_table'").await;
-    assert!(result.is_ok(), "Failed to query pg_stat_user_tables: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "Failed to query pg_stat_user_tables: {:?}",
+        result
+    );
 
     let response = result.unwrap();
     assert_eq!(response.columns.len(), 5, "Query should return 5 columns");
@@ -119,7 +149,11 @@ async fn test_pg_database_view() {
     // Test will run migrations automatically via DbHandler::new
 
     // Test pg_database view
-    let result = db.query("SELECT oid, datname, datdba, encoding, datistemplate, datallowconn FROM pg_database").await;
+    let result = db
+        .query(
+            "SELECT oid, datname, datdba, encoding, datistemplate, datallowconn FROM pg_database",
+        )
+        .await;
     assert!(result.is_ok(), "Failed to query pg_database: {:?}", result);
 
     let response = result.unwrap();
@@ -149,19 +183,32 @@ async fn test_pg_database_view() {
 #[tokio::test]
 async fn test_pg_foreign_data_wrapper_view() {
     // Create a temporary file database for the test
-    let temp_file = format!("/tmp/test_pg_foreign_data_wrapper_{}.db", uuid::Uuid::new_v4());
+    let temp_file = format!(
+        "/tmp/test_pg_foreign_data_wrapper_{}.db",
+        uuid::Uuid::new_v4()
+    );
     let db = Arc::new(DbHandler::new(&temp_file).expect("Failed to create database"));
     let _session = Arc::new(SessionState::new("test".to_string(), "test".to_string()));
 
     // Test will run migrations automatically via DbHandler::new
 
     // Test pg_foreign_data_wrapper view
-    let result = db.query("SELECT oid, fdwname, fdwowner, fdwhandler FROM pg_foreign_data_wrapper").await;
-    assert!(result.is_ok(), "Failed to query pg_foreign_data_wrapper: {:?}", result);
+    let result = db
+        .query("SELECT oid, fdwname, fdwowner, fdwhandler FROM pg_foreign_data_wrapper")
+        .await;
+    assert!(
+        result.is_ok(),
+        "Failed to query pg_foreign_data_wrapper: {:?}",
+        result
+    );
 
     let response = result.unwrap();
     assert_eq!(response.columns.len(), 4, "Query should return 4 columns");
-    assert_eq!(response.rows.len(), 0, "pg_foreign_data_wrapper should return 0 rows (empty view)");
+    assert_eq!(
+        response.rows.len(),
+        0,
+        "pg_foreign_data_wrapper should return 0 rows (empty view)"
+    );
 
     // Clean up
     std::fs::remove_file(&temp_file).ok();
@@ -181,8 +228,14 @@ async fn test_pg_stat_all_tables_view() {
     assert!(result.is_ok(), "Failed to create test table: {:?}", result);
 
     // Test pg_stat_all_tables view (should be same as pg_stat_user_tables)
-    let result = db.query("SELECT schemaname, relname FROM pg_stat_all_tables WHERE relname = 'another_test'").await;
-    assert!(result.is_ok(), "Failed to query pg_stat_all_tables: {:?}", result);
+    let result = db
+        .query("SELECT schemaname, relname FROM pg_stat_all_tables WHERE relname = 'another_test'")
+        .await;
+    assert!(
+        result.is_ok(),
+        "Failed to query pg_stat_all_tables: {:?}",
+        result
+    );
 
     let response = result.unwrap();
     assert_eq!(response.columns.len(), 2, "Query should return 2 columns");
@@ -202,12 +255,22 @@ async fn test_pg_stat_user_indexes_view() {
     // Test will run migrations automatically via DbHandler::new
 
     // Test pg_stat_user_indexes view (should be empty)
-    let result = db.query("SELECT relid, indexrelid, schemaname FROM pg_stat_user_indexes").await;
-    assert!(result.is_ok(), "Failed to query pg_stat_user_indexes: {:?}", result);
+    let result = db
+        .query("SELECT relid, indexrelid, schemaname FROM pg_stat_user_indexes")
+        .await;
+    assert!(
+        result.is_ok(),
+        "Failed to query pg_stat_user_indexes: {:?}",
+        result
+    );
 
     let response = result.unwrap();
     assert_eq!(response.columns.len(), 3, "Query should return 3 columns");
-    assert_eq!(response.rows.len(), 0, "pg_stat_user_indexes should return 0 rows (empty view)");
+    assert_eq!(
+        response.rows.len(),
+        0,
+        "pg_stat_user_indexes should return 0 rows (empty view)"
+    );
 
     // Clean up
     std::fs::remove_file(&temp_file).ok();

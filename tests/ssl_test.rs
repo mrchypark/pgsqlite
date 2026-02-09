@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use pgsqlite::config::Config;
+    use pgsqlite::config::{AuthMode, Config};
     use pgsqlite::ssl::CertificateManager;
     use std::sync::Arc;
     use tempfile::TempDir;
@@ -17,9 +17,14 @@ mod tests {
             ssl_ephemeral: true,
             in_memory: true,
             port: 5432,
+            listen_addr: "127.0.0.1".parse().unwrap(),
             log_level: "info".to_string(),
             no_tcp: false,
             socket_dir: "/tmp".to_string(),
+            auth: AuthMode::Trust,
+            password: None,
+            insecure_allow_remote_trust: false,
+            socket_permissions: "0700".to_string(),
             use_pooling: false,
             max_connections: 100,
             pool_size: 8,
@@ -93,9 +98,14 @@ mod tests {
             ssl_ephemeral: false,
             in_memory: false,
             port: 5432,
+            listen_addr: "127.0.0.1".parse().unwrap(),
             log_level: "info".to_string(),
             no_tcp: false,
             socket_dir: "/tmp".to_string(),
+            auth: AuthMode::Trust,
+            password: None,
+            insecure_allow_remote_trust: false,
+            socket_permissions: "0700".to_string(),
             use_pooling: false,
             max_connections: 100,
             pool_size: 8,
@@ -179,9 +189,14 @@ mod tests {
             ssl_ephemeral: false,
             in_memory: false,
             port: 5432,
+            listen_addr: "127.0.0.1".parse().unwrap(),
             log_level: "info".to_string(),
             no_tcp: true, // TCP disabled, only Unix sockets
             socket_dir: "/tmp".to_string(),
+            auth: AuthMode::Trust,
+            password: None,
+            insecure_allow_remote_trust: false,
+            socket_permissions: "0700".to_string(),
             use_pooling: false,
             max_connections: 100,
             pool_size: 8,
