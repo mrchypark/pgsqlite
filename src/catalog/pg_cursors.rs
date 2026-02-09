@@ -115,8 +115,14 @@ impl PgCursorsHandler {
             let meta = portal_meta.get(name);
             row.insert(
                 "is_holdable".to_string(),
-                meta.map(|m| if m.is_holdable { b"t".to_vec() } else { b"f".to_vec() })
-                    .unwrap_or_else(|| b"f".to_vec()),
+                meta.map(|m| {
+                    if m.is_holdable {
+                        b"t".to_vec()
+                    } else {
+                        b"f".to_vec()
+                    }
+                })
+                .unwrap_or_else(|| b"f".to_vec()),
             );
             row.insert(
                 "is_binary".to_string(),
@@ -128,8 +134,14 @@ impl PgCursorsHandler {
             );
             row.insert(
                 "is_scrollable".to_string(),
-                meta.map(|m| if m.is_scrollable { b"t".to_vec() } else { b"f".to_vec() })
-                    .unwrap_or_else(|| b"f".to_vec()),
+                meta.map(|m| {
+                    if m.is_scrollable {
+                        b"t".to_vec()
+                    } else {
+                        b"f".to_vec()
+                    }
+                })
+                .unwrap_or_else(|| b"f".to_vec()),
             );
             row.insert(
                 "creation_time".to_string(),

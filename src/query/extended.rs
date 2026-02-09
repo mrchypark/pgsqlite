@@ -130,10 +130,10 @@ fn infer_expression_alias_type(query: &str, col_name: &str) -> Option<i32> {
 
 #[inline]
 fn adjust_inferred_type_for_expression_alias(query: &str, col_name: &str, inferred: i32) -> i32 {
-    if inferred == PgType::Int4.to_oid() || inferred == PgType::Int8.to_oid() {
-        if let Some(expr_type) = infer_expression_alias_type(query, col_name) {
-            return expr_type;
-        }
+    if (inferred == PgType::Int4.to_oid() || inferred == PgType::Int8.to_oid())
+        && let Some(expr_type) = infer_expression_alias_type(query, col_name)
+    {
+        return expr_type;
     }
     inferred
 }

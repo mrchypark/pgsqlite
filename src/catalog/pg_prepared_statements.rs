@@ -132,8 +132,14 @@ impl PgPreparedStatementsHandler {
             row.insert("result_types".to_string(), b"{}".to_vec());
             row.insert(
                 "from_sql".to_string(),
-                meta.map(|m| if m.from_sql { b"t".to_vec() } else { b"f".to_vec() })
-                    .unwrap_or_else(|| b"f".to_vec()),
+                meta.map(|m| {
+                    if m.from_sql {
+                        b"t".to_vec()
+                    } else {
+                        b"f".to_vec()
+                    }
+                })
+                .unwrap_or_else(|| b"f".to_vec()),
             );
             row.insert(
                 "generic_plans".to_string(),

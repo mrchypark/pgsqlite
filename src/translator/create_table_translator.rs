@@ -230,10 +230,7 @@ impl CreateTableTranslator {
 
     fn normalize_identifier(identifier: &str) -> String {
         let trimmed = identifier.trim();
-        if let Some(unquoted) = trimmed
-            .strip_prefix('"')
-            .and_then(|s| s.strip_suffix('"'))
-        {
+        if let Some(unquoted) = trimmed.strip_prefix('"').and_then(|s| s.strip_suffix('"')) {
             // SQL quoted identifiers escape `"` as `""`.
             unquoted.replace("\"\"", "\"")
         } else {
