@@ -350,7 +350,7 @@ impl Drop for PooledConnection {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tokio::time::{Duration, sleep};
+    use tokio::time::Duration;
 
     #[tokio::test]
     async fn test_pool_creation() {
@@ -399,8 +399,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_connection_timeout_and_cleanup() {
-        // Test with very short timeout for faster test
+    async fn test_connection_return_updates_stats() {
         let pool = SqlitePool::new_with_config(
             ":memory:",
             2,
@@ -409,16 +408,14 @@ mod tests {
         )
         .unwrap();
 
-        let conn = pool.acquire().await.unwrap();
-        drop(conn); // Return to pool
+        {
+            let _conn = pool.acquire().await.unwrap();
+            let stats = pool.get_stats();
+            assert_eq!(stats.active_connections, 1);
+        }
 
-        // Wait for background cleanup
-        sleep(Duration::from_millis(200)).await;
-
-        // The background task should have run and potentially cleaned up idle connections
-        // (exact behavior depends on timing, but this tests that the mechanism works)
-        let _stats = pool.get_stats();
-        // The background task should have run and health checks should have occurred
-        // No specific assertion needed since health_checks_performed is always >= 0
+        let stats = pool.get_stats();
+        assert_eq!(stats.active_connections, 0);
+        assert_eq!(stats.idle_connections, stats.total_connections);
     }
 }
