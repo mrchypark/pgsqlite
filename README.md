@@ -188,7 +188,7 @@ For all configuration options, see the [Configuration Reference](docs/configurat
 - **VARCHAR/CHAR Constraints**: Length validation for `VARCHAR(n)` and `CHAR(n)` with proper padding
 - **NUMERIC/DECIMAL Constraints**: Precision and scale validation for `NUMERIC(p,s)` and `DECIMAL(p,s)`
 - **CREATE INDEX with Operator Classes**: Support for PostgreSQL operator classes like `varchar_pattern_ops`, `text_pattern_ops` (mapped to SQLite `COLLATE BINARY` for pattern matching optimization)
-- **psql Compatibility**: Improved system catalog compatibility for psql introspection (some meta-commands work; describing a specific table is still a work in progress)
+- **psql Compatibility**: Improved system catalog compatibility for psql introspection (see `tests/sql/meta/` for known-working meta-command coverage; describing a specific table is still a work in progress)
 
 ### Security Features
 
