@@ -1,12 +1,12 @@
-use crate::session::db_handler::{DbHandler, DbResponse};
-use crate::PgSqliteError;
-use sqlparser::ast::{Select, SelectItem, Expr};
-use sqlparser::ast::{FunctionArgExpr, Ident};
-use tracing::debug;
-use std::collections::HashMap;
 use super::where_evaluator::WhereEvaluator;
+use crate::PgSqliteError;
 use crate::session::SessionState;
+use crate::session::db_handler::{DbHandler, DbResponse};
+use sqlparser::ast::{Expr, Select, SelectItem};
+use sqlparser::ast::{FunctionArgExpr, Ident};
+use std::collections::HashMap;
 use std::sync::Arc;
+use tracing::debug;
 
 pub struct PgProcHandler;
 
@@ -56,9 +56,10 @@ impl PgProcHandler {
         if Self::is_count_star_query(select) {
             let mut functions = Self::get_system_functions();
             if let Some(session) = session
-                && let Ok(user_funcs) = Self::load_user_functions(db, session).await {
-                    functions.extend(user_funcs);
-                }
+                && let Ok(user_funcs) = Self::load_user_functions(db, session).await
+            {
+                functions.extend(user_funcs);
+            }
 
             let filtered = if let Some(where_clause) = &select.selection {
                 Self::apply_where_filter(&functions, where_clause, &all_columns)?
@@ -83,9 +84,10 @@ impl PgProcHandler {
 
         // Add persisted SQL-language user functions if available
         if let Some(session) = session
-            && let Ok(user_funcs) = Self::load_user_functions(db, session).await {
-                functions.extend(user_funcs);
-            }
+            && let Ok(user_funcs) = Self::load_user_functions(db, session).await
+        {
+            functions.extend(user_funcs);
+        }
 
         // Apply WHERE clause filtering if present
         let filtered_functions = if let Some(where_clause) = &select.selection {
@@ -128,7 +130,18 @@ impl PgProcHandler {
                         selected.push(col_name);
                     }
                 }
-                SelectItem::ExprWithAlias { expr: Expr::Identifier(ident), alias } => {
+                SelectItem::UnnamedExpr(Expr::CompoundIdentifier(idents)) => {
+                    if let Some(ident) = idents.last() {
+                        let col_name = ident.value.to_lowercase();
+                        if all_columns.contains(&col_name) {
+                            selected.push(col_name);
+                        }
+                    }
+                }
+                SelectItem::ExprWithAlias {
+                    expr: Expr::Identifier(ident),
+                    alias,
+                } => {
                     let col_name = ident.value.to_lowercase();
                     if all_columns.contains(&col_name) {
                         selected.push(alias.value.clone());
@@ -156,7 +169,9 @@ impl PgProcHandler {
 
         // name could be "count" or pg_catalog.count; we only check last ident.
         let func_name = match func.name.0.last() {
-            Some(sqlparser::ast::ObjectNamePart::Identifier(Ident { value, .. })) => value.to_lowercase(),
+            Some(sqlparser::ast::ObjectNamePart::Identifier(Ident { value, .. })) => {
+                value.to_lowercase()
+            }
             None => return false,
         };
         if func_name != "count" {
@@ -169,7 +184,10 @@ impl PgProcHandler {
         if args.len() != 1 {
             return false;
         }
-        matches!(&args[0], sqlparser::ast::FunctionArg::Unnamed(FunctionArgExpr::Wildcard))
+        matches!(
+            &args[0],
+            sqlparser::ast::FunctionArg::Unnamed(FunctionArgExpr::Wildcard)
+        )
     }
 
     fn get_system_functions() -> Vec<HashMap<String, Vec<u8>>> {
@@ -183,79 +201,80 @@ impl PgProcHandler {
             ("upper", "11", "25", "f", "i", true, false),   // upper(text) -> text
             ("substr", "11", "25", "f", "i", true, false),  // substr(text, int, int) -> text
             ("replace", "11", "25", "f", "i", true, false), // replace(text, text, text) -> text
-
             // Math functions
-            ("abs", "11", "23", "f", "i", true, false),     // abs(int) -> int
+            ("abs", "11", "23", "f", "i", true, false), // abs(int) -> int
             ("round", "11", "1700", "f", "i", true, false), // round(numeric) -> numeric
-            ("ceil", "11", "1700", "f", "i", true, false),  // ceil(numeric) -> numeric
+            ("ceil", "11", "1700", "f", "i", true, false), // ceil(numeric) -> numeric
             ("floor", "11", "1700", "f", "i", true, false), // floor(numeric) -> numeric
-
             // Aggregate functions
-            ("count", "11", "20", "f", "v", false, true),   // count(*) -> bigint
-            ("sum", "11", "1700", "f", "v", false, true),   // sum(numeric) -> numeric
-            ("avg", "11", "1700", "f", "v", false, true),   // avg(numeric) -> numeric
-            ("max", "11", "2283", "f", "v", false, true),   // max(any) -> any
-            ("min", "11", "2283", "f", "v", false, true),   // min(any) -> any
-
+            ("count", "11", "20", "f", "v", false, true), // count(*) -> bigint
+            ("sum", "11", "1700", "f", "v", false, true), // sum(numeric) -> numeric
+            ("avg", "11", "1700", "f", "v", false, true), // avg(numeric) -> numeric
+            ("max", "11", "2283", "f", "v", false, true), // max(any) -> any
+            ("min", "11", "2283", "f", "v", false, true), // min(any) -> any
             // Date/time functions
-            ("now", "11", "1184", "f", "v", false, false),  // now() -> timestamptz
-            ("date", "11", "1082", "f", "i", true, false),  // date(text) -> date
-
+            ("now", "11", "1184", "f", "v", false, false), // now() -> timestamptz
+            ("date", "11", "1082", "f", "i", true, false), // date(text) -> date
             // JSON functions
-            ("json_agg", "11", "114", "f", "v", false, true),     // json_agg(any) -> json
-            ("jsonb_agg", "11", "3802", "f", "v", false, true),   // jsonb_agg(any) -> jsonb
+            ("json_agg", "11", "114", "f", "v", false, true), // json_agg(any) -> json
+            ("jsonb_agg", "11", "3802", "f", "v", false, true), // jsonb_agg(any) -> jsonb
             ("json_object_agg", "11", "114", "f", "v", false, true), // json_object_agg -> json
-
             // Array functions
-            ("array_agg", "11", "2277", "f", "v", false, true),   // array_agg(any) -> anyarray
-            ("unnest", "11", "2283", "f", "i", false, true),      // unnest(anyarray) -> setof any
-
+            ("array_agg", "11", "2277", "f", "v", false, true), // array_agg(any) -> anyarray
+            ("unnest", "11", "2283", "f", "i", false, true),    // unnest(anyarray) -> setof any
             // UUID functions
             ("uuid_generate_v4", "11", "2950", "f", "v", false, false), // uuid_generate_v4() -> uuid
             ("uuid_generate_v1", "11", "2950", "f", "v", false, false), // uuid_generate_v1() -> uuid
             ("uuid_generate_v1mc", "11", "2950", "f", "v", false, false), // uuid_generate_v1mc() -> uuid
             ("uuid_generate_v3", "11", "2950", "f", "i", true, false), // uuid_generate_v3(uuid,text) -> uuid
             ("uuid_generate_v5", "11", "2950", "f", "i", true, false), // uuid_generate_v5(uuid,text) -> uuid
-            ("uuid_nil", "11", "2950", "f", "v", false, false), // uuid_nil() -> uuid
-            ("uuid_ns_dns", "11", "2950", "f", "v", false, false), // uuid_ns_dns() -> uuid
-            ("uuid_ns_url", "11", "2950", "f", "v", false, false), // uuid_ns_url() -> uuid
-            ("uuid_ns_oid", "11", "2950", "f", "v", false, false), // uuid_ns_oid() -> uuid
-            ("uuid_ns_x500", "11", "2950", "f", "v", false, false), // uuid_ns_x500() -> uuid
-
+            ("uuid_nil", "11", "2950", "f", "v", false, false),        // uuid_nil() -> uuid
+            ("uuid_ns_dns", "11", "2950", "f", "v", false, false),     // uuid_ns_dns() -> uuid
+            ("uuid_ns_url", "11", "2950", "f", "v", false, false),     // uuid_ns_url() -> uuid
+            ("uuid_ns_oid", "11", "2950", "f", "v", false, false),     // uuid_ns_oid() -> uuid
+            ("uuid_ns_x500", "11", "2950", "f", "v", false, false),    // uuid_ns_x500() -> uuid
             // unaccent extension functions
             ("unaccent", "11", "25", "f", "s", true, false), // unaccent(text) -> text
-
             // System functions
-            ("version", "11", "25", "f", "s", false, false),      // version() -> text
+            ("version", "11", "25", "f", "s", false, false), // version() -> text
             ("current_database", "11", "19", "f", "s", false, false), // current_database() -> name
             ("current_user", "11", "19", "f", "s", false, false), // current_user -> name
-
             // PG16-era common introspection/system functions
             ("current_setting", "11", "25", "f", "s", false, false), // current_setting(text[, bool]) -> text
             ("current_schema", "11", "19", "f", "s", false, false),  // current_schema() -> name
             ("current_schemas", "11", "1003", "f", "s", false, true), // current_schemas(bool) -> setof name[] (approx)
-            ("session_user", "11", "19", "f", "s", false, false), // session_user -> name
-            ("user", "11", "19", "f", "s", false, false),         // user -> name
-            ("pg_backend_pid", "11", "23", "f", "v", false, false), // pg_backend_pid() -> int4
+            ("session_user", "11", "19", "f", "s", false, false),     // session_user -> name
+            ("user", "11", "19", "f", "s", false, false),             // user -> name
+            ("pg_backend_pid", "11", "23", "f", "v", false, false),   // pg_backend_pid() -> int4
             ("pg_is_in_recovery", "11", "16", "f", "s", false, false), // pg_is_in_recovery() -> bool
-            ("pg_postmaster_start_time", "11", "1184", "f", "s", false, false), // pg_postmaster_start_time() -> timestamptz
+            (
+                "pg_postmaster_start_time",
+                "11",
+                "1184",
+                "f",
+                "s",
+                false,
+                false,
+            ), // pg_postmaster_start_time() -> timestamptz
             ("pg_conf_load_time", "11", "1184", "f", "s", false, false), // pg_conf_load_time() -> timestamptz
             ("pg_database_size", "11", "20", "f", "s", false, false), // pg_database_size(name) -> int8
             ("inet_client_addr", "11", "869", "f", "s", false, false), // inet_client_addr() -> inet
             ("inet_client_port", "11", "23", "f", "s", false, false), // inet_client_port() -> int4
             ("inet_server_addr", "11", "869", "f", "s", false, false), // inet_server_addr() -> inet
             ("inet_server_port", "11", "23", "f", "s", false, false), // inet_server_port() -> int4
-            ("pg_has_role", "11", "16", "f", "s", false, false), // pg_has_role(...) -> bool
+            ("pg_has_role", "11", "16", "f", "s", false, false),      // pg_has_role(...) -> bool
             ("has_database_privilege", "11", "16", "f", "s", false, false), // has_database_privilege(...) -> bool
             ("has_schema_privilege", "11", "16", "f", "s", false, false), // has_schema_privilege(...) -> bool
             ("has_table_privilege", "11", "16", "f", "s", false, false), // has_table_privilege(...) -> bool
             ("pg_get_userbyid", "11", "19", "f", "s", false, false), // pg_get_userbyid(oid) -> name
             ("obj_description", "11", "25", "f", "s", false, false), // obj_description(...) -> text
             ("col_description", "11", "25", "f", "s", false, false), // col_description(oid, int4) -> text
-            ("pg_size_pretty", "11", "25", "f", "s", false, false), // pg_size_pretty(int8) -> text
+            ("pg_size_pretty", "11", "25", "f", "s", false, false),  // pg_size_pretty(int8) -> text
         ];
 
-        for (i, (name, namespace, return_type, kind, volatility, is_strict, returns_set)) in sql_functions.iter().enumerate() {
+        for (i, (name, namespace, return_type, kind, volatility, is_strict, returns_set)) in
+            sql_functions.iter().enumerate()
+        {
             let oid = (16384 + i) as u32; // Start from 16384 for user functions
 
             let mut func = HashMap::new();
@@ -271,8 +290,14 @@ impl PgProcHandler {
             func.insert("prokind".to_string(), kind.as_bytes().to_vec());
             func.insert("prosecdef".to_string(), b"f".to_vec());
             func.insert("proleakproof".to_string(), b"f".to_vec());
-            func.insert("proisstrict".to_string(), if *is_strict { b"t" } else { b"f" }.to_vec());
-            func.insert("proretset".to_string(), if *returns_set { b"t" } else { b"f" }.to_vec());
+            func.insert(
+                "proisstrict".to_string(),
+                if *is_strict { b"t" } else { b"f" }.to_vec(),
+            );
+            func.insert(
+                "proretset".to_string(),
+                if *returns_set { b"t" } else { b"f" }.to_vec(),
+            );
             func.insert("provolatile".to_string(), volatility.as_bytes().to_vec());
             func.insert("proparallel".to_string(), b"s".to_vec()); // safe for parallel
             func.insert("pronargs".to_string(), b"0".to_vec()); // simplified - would need proper arg counting
@@ -328,10 +353,23 @@ impl PgProcHandler {
             return Ok(out);
         };
 
-        for (i, (schema_name, func_name, func_nargs, func_kind, func_strict, func_retset, func_volatile, func_rettype)) in
-            rows.into_iter().enumerate()
+        for (
+            i,
+            (
+                schema_name,
+                func_name,
+                func_nargs,
+                func_kind,
+                func_strict,
+                func_retset,
+                func_volatile,
+                func_rettype,
+            ),
+        ) in rows.into_iter().enumerate()
         {
-            let oid = crate::utils::oid_generator::generate_oid(&format!("{schema_name}.{func_name}/{func_nargs}")) + (i as u32);
+            let oid = crate::utils::oid_generator::generate_oid(&format!(
+                "{schema_name}.{func_name}/{func_nargs}"
+            )) + (i as u32);
             let mut func = HashMap::new();
             func.insert("oid".to_string(), oid.to_string().into_bytes());
             func.insert("proname".to_string(), func_name.as_bytes().to_vec());
@@ -357,7 +395,10 @@ impl PgProcHandler {
             func.insert("proparallel".to_string(), b"s".to_vec());
             func.insert("pronargs".to_string(), func_nargs.to_string().into_bytes());
             func.insert("pronargdefaults".to_string(), b"0".to_vec());
-            func.insert("prorettype".to_string(), func_rettype.to_string().into_bytes());
+            func.insert(
+                "prorettype".to_string(),
+                func_rettype.to_string().into_bytes(),
+            );
             func.insert("proargtypes".to_string(), b"".to_vec());
             func.insert("proallargtypes".to_string(), b"".to_vec());
             func.insert("proargmodes".to_string(), b"".to_vec());

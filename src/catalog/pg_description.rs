@@ -1,9 +1,9 @@
-use crate::session::db_handler::{DbHandler, DbResponse};
-use crate::PgSqliteError;
-use sqlparser::ast::{Select, SelectItem, Expr};
-use tracing::debug;
-use std::collections::HashMap;
 use super::where_evaluator::WhereEvaluator;
+use crate::PgSqliteError;
+use crate::session::db_handler::{DbHandler, DbResponse};
+use sqlparser::ast::{Expr, Select, SelectItem};
+use std::collections::HashMap;
+use tracing::debug;
 
 pub struct PgDescriptionHandler;
 
@@ -69,7 +69,10 @@ impl PgDescriptionHandler {
                         selected.push(col_name);
                     }
                 }
-                SelectItem::ExprWithAlias { expr: Expr::Identifier(ident), alias } => {
+                SelectItem::ExprWithAlias {
+                    expr: Expr::Identifier(ident),
+                    alias,
+                } => {
                     let col_name = ident.value.to_lowercase();
                     if all_columns.contains(&col_name) {
                         selected.push(alias.value.clone());
@@ -87,7 +90,9 @@ impl PgDescriptionHandler {
         selected
     }
 
-    async fn get_object_descriptions(db: &DbHandler) -> Result<Vec<HashMap<String, Vec<u8>>>, PgSqliteError> {
+    async fn get_object_descriptions(
+        db: &DbHandler,
+    ) -> Result<Vec<HashMap<String, Vec<u8>>>, PgSqliteError> {
         let mut descriptions = Vec::new();
 
         // Get table comments from __pgsqlite_comments table
@@ -105,7 +110,9 @@ impl PgDescriptionHandler {
         Ok(descriptions)
     }
 
-    async fn get_table_comments(db: &DbHandler) -> Result<Vec<HashMap<String, Vec<u8>>>, PgSqliteError> {
+    async fn get_table_comments(
+        db: &DbHandler,
+    ) -> Result<Vec<HashMap<String, Vec<u8>>>, PgSqliteError> {
         let mut comments = Vec::new();
 
         // Query table comments from __pgsqlite_comments
@@ -119,14 +126,15 @@ impl PgDescriptionHandler {
             Ok(response) => {
                 for row in response.rows {
                     if row.len() >= 3
-                        && let (Some(object_oid_bytes), Some(comment_bytes)) = (&row[0], &row[2]) {
+                        && let (Some(object_oid_bytes), Some(comment_bytes)) = (&row[0], &row[2])
+                    {
                         let object_oid = String::from_utf8_lossy(object_oid_bytes);
                         let comment_text = String::from_utf8_lossy(comment_bytes);
 
                         let mut desc = HashMap::new();
                         desc.insert("objoid".to_string(), object_oid.as_bytes().to_vec());
                         desc.insert("classoid".to_string(), b"1259".to_vec()); // pg_class OID
-                        desc.insert("objsubid".to_string(), b"0".to_vec());    // 0 for table itself
+                        desc.insert("objsubid".to_string(), b"0".to_vec()); // 0 for table itself
                         desc.insert("description".to_string(), comment_text.as_bytes().to_vec());
 
                         comments.push(desc);
@@ -142,7 +150,9 @@ impl PgDescriptionHandler {
         Ok(comments)
     }
 
-    async fn get_column_comments(db: &DbHandler) -> Result<Vec<HashMap<String, Vec<u8>>>, PgSqliteError> {
+    async fn get_column_comments(
+        db: &DbHandler,
+    ) -> Result<Vec<HashMap<String, Vec<u8>>>, PgSqliteError> {
         let mut comments = Vec::new();
 
         // Query column comments from __pgsqlite_comments
@@ -156,8 +166,12 @@ impl PgDescriptionHandler {
             Ok(response) => {
                 for row in response.rows {
                     if row.len() >= 4
-                        && let (Some(object_oid_bytes), Some(subobject_id_bytes), Some(comment_bytes)) =
-                               (&row[0], &row[2], &row[3]) {
+                        && let (
+                            Some(object_oid_bytes),
+                            Some(subobject_id_bytes),
+                            Some(comment_bytes),
+                        ) = (&row[0], &row[2], &row[3])
+                    {
                         let object_oid = String::from_utf8_lossy(object_oid_bytes);
                         let subobject_id = String::from_utf8_lossy(subobject_id_bytes);
                         let comment_text = String::from_utf8_lossy(comment_bytes);
@@ -181,7 +195,9 @@ impl PgDescriptionHandler {
         Ok(comments)
     }
 
-    async fn get_function_comments(db: &DbHandler) -> Result<Vec<HashMap<String, Vec<u8>>>, PgSqliteError> {
+    async fn get_function_comments(
+        db: &DbHandler,
+    ) -> Result<Vec<HashMap<String, Vec<u8>>>, PgSqliteError> {
         let mut comments = Vec::new();
 
         // Query function comments from __pgsqlite_comments (if any exist)
@@ -195,14 +211,15 @@ impl PgDescriptionHandler {
             Ok(response) => {
                 for row in response.rows {
                     if row.len() >= 3
-                        && let (Some(object_oid_bytes), Some(comment_bytes)) = (&row[0], &row[2]) {
+                        && let (Some(object_oid_bytes), Some(comment_bytes)) = (&row[0], &row[2])
+                    {
                         let object_oid = String::from_utf8_lossy(object_oid_bytes);
                         let comment_text = String::from_utf8_lossy(comment_bytes);
 
                         let mut desc = HashMap::new();
                         desc.insert("objoid".to_string(), object_oid.as_bytes().to_vec());
                         desc.insert("classoid".to_string(), b"1255".to_vec()); // pg_proc OID
-                        desc.insert("objsubid".to_string(), b"0".to_vec());    // 0 for function itself
+                        desc.insert("objsubid".to_string(), b"0".to_vec()); // 0 for function itself
                         desc.insert("description".to_string(), comment_text.as_bytes().to_vec());
 
                         comments.push(desc);
@@ -217,7 +234,6 @@ impl PgDescriptionHandler {
 
         Ok(comments)
     }
-
 
     fn apply_where_filter(
         descriptions: &[HashMap<String, Vec<u8>>],

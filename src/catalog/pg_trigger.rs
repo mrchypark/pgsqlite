@@ -1,9 +1,9 @@
-use crate::session::db_handler::{DbHandler, DbResponse};
-use crate::PgSqliteError;
-use sqlparser::ast::{Select, SelectItem, Expr};
-use tracing::debug;
-use std::collections::HashMap;
 use super::where_evaluator::WhereEvaluator;
+use crate::PgSqliteError;
+use crate::session::db_handler::{DbHandler, DbResponse};
+use sqlparser::ast::{Expr, Select, SelectItem};
+use std::collections::HashMap;
+use tracing::debug;
 
 pub struct PgTriggerHandler;
 
@@ -47,8 +47,14 @@ impl PgTriggerHandler {
         };
 
         filtered_triggers.sort_by(|a, b| {
-            let name_a = a.get("tgname").and_then(|v| String::from_utf8(v.clone()).ok()).unwrap_or_default();
-            let name_b = b.get("tgname").and_then(|v| String::from_utf8(v.clone()).ok()).unwrap_or_default();
+            let name_a = a
+                .get("tgname")
+                .and_then(|v| String::from_utf8(v.clone()).ok())
+                .unwrap_or_default();
+            let name_b = b
+                .get("tgname")
+                .and_then(|v| String::from_utf8(v.clone()).ok())
+                .unwrap_or_default();
             name_a.cmp(&name_b)
         });
 
@@ -85,7 +91,10 @@ impl PgTriggerHandler {
                         selected.push(col_name);
                     }
                 }
-                SelectItem::ExprWithAlias { expr: Expr::Identifier(ident), alias } => {
+                SelectItem::ExprWithAlias {
+                    expr: Expr::Identifier(ident),
+                    alias,
+                } => {
                     let col_name = ident.value.to_lowercase();
                     if all_columns.contains(&col_name) {
                         selected.push(alias.value.clone());
@@ -98,7 +107,10 @@ impl PgTriggerHandler {
                 SelectItem::UnnamedExpr(Expr::Function(_)) => {
                     selected.push("count".to_string());
                 }
-                SelectItem::ExprWithAlias { expr: Expr::Function(_), alias } => {
+                SelectItem::ExprWithAlias {
+                    expr: Expr::Function(_),
+                    alias,
+                } => {
                     selected.push(alias.value.clone());
                 }
                 _ => {}
@@ -111,18 +123,22 @@ impl PgTriggerHandler {
     async fn get_triggers(db: &DbHandler) -> Result<Vec<HashMap<String, Vec<u8>>>, PgSqliteError> {
         let mut triggers = Vec::new();
 
-        let conn = rusqlite::Connection::open(&db.db_path).map_err(PgSqliteError::Sqlite)?;
+        let conn = db
+            .open_dedicated_connection()
+            .map_err(PgSqliteError::Sqlite)?;
 
         let query = "SELECT name, tbl_name, sql FROM sqlite_master WHERE type = 'trigger'";
 
         let mut stmt = conn.prepare(query).map_err(PgSqliteError::Sqlite)?;
 
-        let rows = stmt.query_map([], |row| {
-            let name: String = row.get(0)?;
-            let tbl_name: String = row.get(1)?;
-            let sql: String = row.get(2)?;
-            Ok((name, tbl_name, sql))
-        }).map_err(PgSqliteError::Sqlite)?;
+        let rows = stmt
+            .query_map([], |row| {
+                let name: String = row.get(0)?;
+                let tbl_name: String = row.get(1)?;
+                let sql: String = row.get(2)?;
+                Ok((name, tbl_name, sql))
+            })
+            .map_err(PgSqliteError::Sqlite)?;
 
         for row_result in rows.flatten() {
             let (trigger_name, table_name, trigger_sql) = row_result;
@@ -155,7 +171,10 @@ impl PgTriggerHandler {
             trigger.insert("tgoldtable".to_string(), b"".to_vec());
             trigger.insert("tgnewtable".to_string(), b"".to_vec());
 
-            debug!("Found trigger {} on table {} with type {}", trigger_name, table_name, tgtype);
+            debug!(
+                "Found trigger {} on table {} with type {}",
+                trigger_name, table_name, tgtype
+            );
             triggers.push(trigger);
         }
 

@@ -2,18 +2,18 @@ use super::{Migration, MigrationAction};
 use lazy_static::lazy_static;
 use std::collections::BTreeMap;
 
-mod v6_to_v14;
 mod v15_to_v23;
 mod v24_to_v34;
+mod v6_to_v14;
 
+use self::v6_to_v14::*;
 use self::v15_to_v23::*;
 use self::v24_to_v34::*;
-use self::v6_to_v14::*;
 
 lazy_static! {
     pub static ref MIGRATIONS: BTreeMap<u32, Migration> = {
         let mut registry = BTreeMap::new();
-        
+
         // Register all migrations
         register_v1_initial_schema(&mut registry);
         register_v2_enum_support(&mut registry);
@@ -69,7 +69,7 @@ fn register_v1_initial_schema(registry: &mut BTreeMap<u32, Migration>) {
                 sqlite_type TEXT NOT NULL,
                 PRIMARY KEY (table_name, column_name)
             );
-            
+
             -- System metadata
             CREATE TABLE IF NOT EXISTS __pgsqlite_metadata (
                 key TEXT PRIMARY KEY,
@@ -77,7 +77,7 @@ fn register_v1_initial_schema(registry: &mut BTreeMap<u32, Migration>) {
                 created_at REAL DEFAULT (strftime('%s', 'now')),
                 updated_at REAL DEFAULT (strftime('%s', 'now'))
             );
-            
+
             -- Migration tracking
             CREATE TABLE IF NOT EXISTS __pgsqlite_migrations (
                 version INTEGER PRIMARY KEY,
@@ -90,7 +90,7 @@ fn register_v1_initial_schema(registry: &mut BTreeMap<u32, Migration>) {
                 error_message TEXT,
                 rolled_back_at REAL
             );
-            
+
             -- Migration locks table (prevent concurrent migrations)
             CREATE TABLE IF NOT EXISTS __pgsqlite_migration_locks (
                 id INTEGER PRIMARY KEY CHECK (id = 1),  -- Only one row allowed
@@ -98,9 +98,9 @@ fn register_v1_initial_schema(registry: &mut BTreeMap<u32, Migration>) {
                 locked_at REAL NOT NULL,
                 expires_at REAL NOT NULL  -- Timeout for stale locks
             );
-            
+
             -- Set initial version
-            INSERT INTO __pgsqlite_metadata (key, value) VALUES 
+            INSERT INTO __pgsqlite_metadata (key, value) VALUES
                 ('schema_version', '1'),
                 ('pgsqlite_version', '0.1.0');
         "#),
@@ -153,7 +153,7 @@ fn register_v2_enum_support(registry: &mut BTreeMap<u32, Migration>) {
             "#,
             r#"
             -- Update schema version
-            UPDATE __pgsqlite_metadata 
+            UPDATE __pgsqlite_metadata
             SET value = '2', updated_at = strftime('%s', 'now')
             WHERE key = 'schema_version';
             "#,
@@ -164,7 +164,7 @@ fn register_v2_enum_support(registry: &mut BTreeMap<u32, Migration>) {
             DROP INDEX IF EXISTS idx_enum_values_type;
             DROP TABLE IF EXISTS __pgsqlite_enum_values;
             DROP TABLE IF EXISTS __pgsqlite_enum_types;
-            UPDATE __pgsqlite_metadata 
+            UPDATE __pgsqlite_metadata
             SET value = '1', updated_at = strftime('%s', 'now')
             WHERE key = 'schema_version';
         "#)),
@@ -174,20 +174,22 @@ fn register_v2_enum_support(registry: &mut BTreeMap<u32, Migration>) {
 
 /// Version 3: DateTime and Timezone support
 fn register_v3_datetime_support(registry: &mut BTreeMap<u32, Migration>) {
-    registry.insert(3, Migration {
-        version: 3,
-        name: "datetime_timezone_support",
-        description: "Add datetime format and timezone metadata for PostgreSQL datetime types",
-        up: MigrationAction::SqlBatch(&[
-            r#"
+    registry.insert(
+        3,
+        Migration {
+            version: 3,
+            name: "datetime_timezone_support",
+            description: "Add datetime format and timezone metadata for PostgreSQL datetime types",
+            up: MigrationAction::SqlBatch(&[
+                r#"
             -- Add datetime format column to track which PostgreSQL datetime type is used
             ALTER TABLE __pgsqlite_schema ADD COLUMN datetime_format TEXT;
             "#,
-            r#"
+                r#"
             -- Add timezone offset column for TIMETZ type (stores offset in seconds from UTC)
             ALTER TABLE __pgsqlite_schema ADD COLUMN timezone_offset INTEGER;
             "#,
-            r#"
+                r#"
             -- Create datetime conversion cache table for performance
             CREATE TABLE IF NOT EXISTS __pgsqlite_datetime_cache (
                 query_hash TEXT NOT NULL,
@@ -198,12 +200,12 @@ fn register_v3_datetime_support(registry: &mut BTreeMap<u32, Migration>) {
                 PRIMARY KEY (query_hash, table_name, column_name)
             );
             "#,
-            r#"
+                r#"
             -- Index for efficient cache lookups
-            CREATE INDEX IF NOT EXISTS idx_datetime_cache_table 
+            CREATE INDEX IF NOT EXISTS idx_datetime_cache_table
             ON __pgsqlite_datetime_cache(table_name);
             "#,
-            r#"
+                r#"
             -- Track session timezone settings
             CREATE TABLE IF NOT EXISTS __pgsqlite_session_settings (
                 session_id TEXT PRIMARY KEY,
@@ -214,63 +216,67 @@ fn register_v3_datetime_support(registry: &mut BTreeMap<u32, Migration>) {
                 updated_at REAL DEFAULT (strftime('%s', 'now'))
             );
             "#,
-            r#"
+                r#"
             -- Update schema version
-            UPDATE __pgsqlite_metadata 
+            UPDATE __pgsqlite_metadata
             SET value = '3', updated_at = strftime('%s', 'now')
             WHERE key = 'schema_version';
             "#,
-        ]),
-        down: Some(MigrationAction::Sql(r#"
+            ]),
+            down: Some(MigrationAction::Sql(
+                r#"
             -- Note: SQLite doesn't support DROP COLUMN in older versions
             -- We would need to recreate the table without the columns
             DROP TABLE IF EXISTS __pgsqlite_session_settings;
             DROP INDEX IF EXISTS idx_datetime_cache_table;
             DROP TABLE IF EXISTS __pgsqlite_datetime_cache;
-            
+
             -- For __pgsqlite_schema, we'd need to recreate it without the new columns
             -- This is left as an exercise since downgrade is rarely needed
-            
-            UPDATE __pgsqlite_metadata 
+
+            UPDATE __pgsqlite_metadata
             SET value = '2', updated_at = strftime('%s', 'now')
             WHERE key = 'schema_version';
-        "#)),
-        dependencies: vec![2],
-    });
+        "#,
+            )),
+            dependencies: vec![2],
+        },
+    );
 }
 
 /// Version 4: Convert datetime storage from REAL/TEXT to INTEGER microseconds
 fn register_v4_datetime_integer_storage(registry: &mut BTreeMap<u32, Migration>) {
-    registry.insert(4, Migration {
-        version: 4,
-        name: "datetime_integer_storage",
-        description: "Convert all datetime types to INTEGER storage using microseconds",
-        up: MigrationAction::SqlBatch(&[
-            // Update type mappings in __pgsqlite_schema
-            r#"
-            UPDATE __pgsqlite_schema 
+    registry.insert(
+        4,
+        Migration {
+            version: 4,
+            name: "datetime_integer_storage",
+            description: "Convert all datetime types to INTEGER storage using microseconds",
+            up: MigrationAction::SqlBatch(&[
+                // Update type mappings in __pgsqlite_schema
+                r#"
+            UPDATE __pgsqlite_schema
             SET sqlite_type = 'INTEGER'
-            WHERE pg_type IN ('DATE', 'TIME', 'TIMESTAMP', 'TIMESTAMPTZ', 
+            WHERE pg_type IN ('DATE', 'TIME', 'TIMESTAMP', 'TIMESTAMPTZ',
                               'date', 'time', 'timestamp', 'timestamptz',
                               'timestamp with time zone', 'timestamp without time zone',
                               'time with time zone', 'time without time zone',
                               'timetz', 'interval');
             "#,
-            
-            // Note: Data conversion would happen here in a real migration
-            // Since we're not supporting backwards compatibility, existing databases
-            // would need to be recreated or have their data converted separately
-            
-            r#"
+                // Note: Data conversion would happen here in a real migration
+                // Since we're not supporting backwards compatibility, existing databases
+                // would need to be recreated or have their data converted separately
+                r#"
             -- Update schema version
-            UPDATE __pgsqlite_metadata 
+            UPDATE __pgsqlite_metadata
             SET value = '4', updated_at = strftime('%s', 'now')
             WHERE key = 'schema_version';
             "#,
-        ]),
-        down: None, // No backwards compatibility needed
-        dependencies: vec![3],
-    });
+            ]),
+            down: None, // No backwards compatibility needed
+            dependencies: vec![3],
+        },
+    );
 }
 
 /// Version 5: PostgreSQL Catalog Tables
@@ -283,28 +289,28 @@ fn register_v5_pg_catalog_tables(registry: &mut BTreeMap<u32, Migration>) {
             pre_sql: Some(r#"
                 -- pg_namespace view (schemas)
                 CREATE VIEW IF NOT EXISTS pg_namespace AS
-                SELECT 
+                SELECT
                     11 as oid,
                     'pg_catalog' as nspname,
                     10 as nspowner,
                     NULL as nspacl
                 UNION ALL
-                SELECT 
+                SELECT
                     2200 as oid,
                     'public' as nspname,
                     10 as nspowner,
                     NULL as nspacl;
-                
+
                 -- pg_am view (access methods)
                 CREATE VIEW IF NOT EXISTS pg_am AS
-                SELECT 
+                SELECT
                     403 as oid,
                     'btree' as amname,
                     'i' as amtype;
-                
+
                 -- pg_type view (data types)
                 CREATE VIEW IF NOT EXISTS pg_type AS
-                SELECT 
+                SELECT
                     oid,
                     typname,
                     typtype,
@@ -332,10 +338,10 @@ fn register_v5_pg_catalog_tables(registry: &mut BTreeMap<u32, Migration>) {
                     UNION ALL SELECT 2950, 'uuid', 'b', 0, 0, 11
                     UNION ALL SELECT 3802, 'jsonb', 'b', 0, 0, 11
                 );
-                
+
                 -- pg_attribute view (column information)
                 CREATE VIEW IF NOT EXISTS pg_attribute AS
-                SELECT 
+                SELECT
                     CAST(
                     (
                         (unicode(substr(m.name, 1, 1)) * 1000000) +
@@ -346,7 +352,7 @@ fn register_v5_pg_catalog_tables(registry: &mut BTreeMap<u32, Migration>) {
                 AS TEXT) as attrelid,     -- table OID
                     p.cid + 1 as attnum,                             -- column number (1-based)
                     p.name as attname,                               -- column name
-                    CASE 
+                    CASE
                         WHEN p.type LIKE '%INT%' THEN 23            -- int4
                         WHEN p.type LIKE '%CHAR%' THEN 1043         -- varchar
                         WHEN p.type LIKE '%TEXT%' THEN 25           -- text
@@ -383,10 +389,10 @@ fn register_v5_pg_catalog_tables(registry: &mut BTreeMap<u32, Migration>) {
                 WHERE m.type = 'table'
                   AND m.name NOT LIKE 'sqlite_%'
                   AND m.name NOT LIKE '__pgsqlite_%';
-                
+
                 -- Enhanced pg_class view that works with JOINs
                 CREATE VIEW IF NOT EXISTS pg_class AS
-                SELECT 
+                SELECT
                     -- Generate stable OID from table name using SQLite built-in functions
                     -- Cast to TEXT to handle both numeric and string comparisons
                     CAST(
@@ -399,7 +405,7 @@ fn register_v5_pg_catalog_tables(registry: &mut BTreeMap<u32, Migration>) {
                     AS TEXT) as oid,
                     name as relname,
                     2200 as relnamespace,  -- public schema
-                    CASE 
+                    CASE
                         WHEN type = 'table' THEN 'r'
                         WHEN type = 'view' THEN 'v'
                         WHEN type = 'index' THEN 'i'
@@ -444,7 +450,7 @@ fn register_v5_pg_catalog_tables(registry: &mut BTreeMap<u32, Migration>) {
                 WHERE type IN ('table', 'view', 'index')
                   AND name NOT LIKE 'sqlite_%'
                   AND name NOT LIKE '__pgsqlite_%';
-                
+
                 -- pg_constraint table for constraints
                 CREATE TABLE IF NOT EXISTS pg_constraint (
                     oid TEXT PRIMARY KEY,
@@ -474,7 +480,7 @@ fn register_v5_pg_catalog_tables(registry: &mut BTreeMap<u32, Migration>) {
                     conbin TEXT,    -- expression tree
                     consrc TEXT     -- human-readable
                 );
-                
+
                 -- pg_attrdef table for column defaults
                 CREATE TABLE IF NOT EXISTS pg_attrdef (
                     oid TEXT PRIMARY KEY,
@@ -483,7 +489,7 @@ fn register_v5_pg_catalog_tables(registry: &mut BTreeMap<u32, Migration>) {
                     adbin TEXT,                  -- expression tree
                     adsrc TEXT                   -- human-readable default
                 );
-                
+
                 -- pg_index table for indexes
                 CREATE TABLE IF NOT EXISTS pg_index (
                     indexrelid TEXT PRIMARY KEY,  -- index OID
@@ -507,9 +513,9 @@ fn register_v5_pg_catalog_tables(registry: &mut BTreeMap<u32, Migration>) {
                     indexprs TEXT,                   -- expression trees
                     indpred TEXT                     -- partial index predicate
                 );
-                
+
                 -- Update schema version
-                UPDATE __pgsqlite_metadata 
+                UPDATE __pgsqlite_metadata
                 SET value = '5', updated_at = strftime('%s', 'now')
                 WHERE key = 'schema_version';
             "#),
@@ -525,7 +531,7 @@ fn register_v5_pg_catalog_tables(registry: &mut BTreeMap<u32, Migration>) {
             DROP TABLE IF EXISTS pg_index;
             DROP TABLE IF EXISTS pg_attrdef;
             DROP TABLE IF EXISTS pg_constraint;
-            UPDATE __pgsqlite_metadata 
+            UPDATE __pgsqlite_metadata
             SET value = '4', updated_at = strftime('%s', 'now')
             WHERE key = 'schema_version';
         "#)),
@@ -536,93 +542,106 @@ fn register_v5_pg_catalog_tables(registry: &mut BTreeMap<u32, Migration>) {
 /// Populate catalog tables with metadata from sqlite_master
 fn populate_catalog_tables(conn: &rusqlite::Connection) -> anyhow::Result<()> {
     use rusqlite::params;
-    
+
     // Get all tables
-    let mut stmt = conn.prepare("
-        SELECT name, sql FROM sqlite_master 
-        WHERE type = 'table' 
+    let mut stmt = conn.prepare(
+        "
+        SELECT name, sql FROM sqlite_master
+        WHERE type = 'table'
         AND name NOT LIKE 'sqlite_%'
         AND name NOT LIKE '__pgsqlite_%'
-    ")?;
-    
-    let tables = stmt.query_map([], |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-    })?.collect::<Result<Vec<_>, rusqlite::Error>>()?;
-    
+    ",
+    )?;
+
+    let tables = stmt
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?
+        .collect::<Result<Vec<_>, rusqlite::Error>>()?;
+
     for (table_name, create_sql) in tables {
         // Generate table OID (same as in pg_class view)
         let table_oid = generate_table_oid(&table_name);
-        
+
         // Parse CREATE TABLE statement to extract constraints
         if let Some(constraints) = parse_table_constraints(&table_name, &create_sql) {
             for constraint in constraints {
                 // Insert into pg_constraint
-                conn.execute("
+                conn.execute(
+                    "
                     INSERT OR IGNORE INTO pg_constraint (
                         oid, conname, contype, conrelid, conkey, consrc
                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-                ", params![
-                    constraint.oid,
-                    constraint.name,
-                    constraint.contype,
-                    table_oid,
-                    constraint.columns.join(","),
-                    constraint.definition
-                ])?;
+                ",
+                    params![
+                        constraint.oid,
+                        constraint.name,
+                        constraint.contype,
+                        table_oid,
+                        constraint.columns.join(","),
+                        constraint.definition
+                    ],
+                )?;
             }
         }
-        
+
         // Parse column defaults
         if let Some(defaults) = parse_column_defaults(&table_name, &create_sql) {
             for default in defaults {
-                conn.execute("
+                conn.execute(
+                    "
                     INSERT OR IGNORE INTO pg_attrdef (
                         oid, adrelid, adnum, adsrc
                     ) VALUES (?1, ?2, ?3, ?4)
-                ", params![
-                    default.oid,
-                    table_oid,
-                    default.column_num,
-                    default.default_expr
-                ])?;
+                ",
+                    params![
+                        default.oid,
+                        table_oid,
+                        default.column_num,
+                        default.default_expr
+                    ],
+                )?;
             }
         }
     }
-    
+
     // Populate pg_index from sqlite_master indexes
-    let mut stmt = conn.prepare("
-        SELECT name, tbl_name, sql FROM sqlite_master 
-        WHERE type = 'index' 
+    let mut stmt = conn.prepare(
+        "
+        SELECT name, tbl_name, sql FROM sqlite_master
+        WHERE type = 'index'
         AND sql IS NOT NULL
-    ")?;
-    
-    let indexes = stmt.query_map([], |row| {
-        Ok((
-            row.get::<_, String>(0)?,
-            row.get::<_, String>(1)?,
-            row.get::<_, String>(2)?
-        ))
-    })?.collect::<Result<Vec<_>, _>>()?;
-    
+    ",
+    )?;
+
+    let indexes = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+
     for (index_name, table_name, create_sql) in indexes {
         let index_oid = generate_table_oid(&index_name);
         let table_oid = generate_table_oid(&table_name);
-        
+
         // Parse index info
         let is_unique = create_sql.to_uppercase().contains("UNIQUE");
-        
-        conn.execute("
+
+        conn.execute(
+            "
             INSERT OR IGNORE INTO pg_index (
-                indexrelid, indrelid, indnatts, indnkeyatts, 
+                indexrelid, indrelid, indnatts, indnkeyatts,
                 indisunique, indisprimary
             ) VALUES (?1, ?2, 1, 1, ?3, 0)
-        ", params![
-            index_oid,
-            table_oid,
-            is_unique as i32
-        ])?;
+        ",
+            params![index_oid, table_oid, is_unique as i32],
+        )?;
     }
-    
+
     Ok(())
 }
 
@@ -642,9 +661,9 @@ struct ConstraintInfo {
 
 fn parse_table_constraints(table_name: &str, create_sql: &str) -> Option<Vec<ConstraintInfo>> {
     use regex::Regex;
-    
+
     let mut constraints = Vec::new();
-    
+
     // Parse PRIMARY KEY constraints
     // Look for both inline PRIMARY KEY and table-level PRIMARY KEY
     if let Ok(pk_regex) = Regex::new(r"(?i)\b(\w+)\s+[^,\)]*\bPRIMARY\s+KEY\b") {
@@ -660,12 +679,13 @@ fn parse_table_constraints(table_name: &str, create_sql: &str) -> Option<Vec<Con
             }
         }
     }
-    
+
     // Parse table-level PRIMARY KEY constraints
     if let Ok(table_pk_regex) = Regex::new(r"(?i)PRIMARY\s+KEY\s*\(\s*([^)]+)\s*\)") {
         for cap in table_pk_regex.captures_iter(create_sql) {
             if let Some(columns_str) = cap.get(1) {
-                let columns: Vec<String> = columns_str.as_str()
+                let columns: Vec<String> = columns_str
+                    .as_str()
                     .split(',')
                     .map(|s| s.trim().to_string())
                     .collect();
@@ -679,13 +699,17 @@ fn parse_table_constraints(table_name: &str, create_sql: &str) -> Option<Vec<Con
             }
         }
     }
-    
+
     // Parse UNIQUE constraints
     if let Ok(unique_regex) = Regex::new(r"(?i)\b(\w+)\s+[^,\)]*\bUNIQUE\b") {
         for cap in unique_regex.captures_iter(create_sql) {
             if let Some(column_name) = cap.get(1) {
                 constraints.push(ConstraintInfo {
-                    oid: generate_table_oid(&format!("{}_{}_key", table_name, column_name.as_str())),
+                    oid: generate_table_oid(&format!(
+                        "{}_{}_key",
+                        table_name,
+                        column_name.as_str()
+                    )),
                     name: format!("{}_{}_key", table_name, column_name.as_str()),
                     contype: "u".to_string(),
                     columns: vec![column_name.as_str().to_string()],
@@ -694,12 +718,13 @@ fn parse_table_constraints(table_name: &str, create_sql: &str) -> Option<Vec<Con
             }
         }
     }
-    
+
     // Parse table-level UNIQUE constraints
     if let Ok(table_unique_regex) = Regex::new(r"(?i)UNIQUE\s*\(\s*([^)]+)\s*\)") {
         for cap in table_unique_regex.captures_iter(create_sql) {
             if let Some(columns_str) = cap.get(1) {
-                let columns: Vec<String> = columns_str.as_str()
+                let columns: Vec<String> = columns_str
+                    .as_str()
                     .split(',')
                     .map(|s| s.trim().to_string())
                     .collect();
@@ -714,7 +739,7 @@ fn parse_table_constraints(table_name: &str, create_sql: &str) -> Option<Vec<Con
             }
         }
     }
-    
+
     // Parse CHECK constraints
     if let Ok(check_regex) = Regex::new(r"(?i)CHECK\s*\(\s*([^)]+)\s*\)") {
         for (i, cap) in check_regex.captures_iter(create_sql).enumerate() {
@@ -730,7 +755,7 @@ fn parse_table_constraints(table_name: &str, create_sql: &str) -> Option<Vec<Con
             }
         }
     }
-    
+
     // Parse NOT NULL constraints (treated as check constraints in PostgreSQL)
     if let Ok(not_null_regex) = Regex::new(r"(?i)\b(\w+)\s+[^,\)]*\bNOT\s+NULL\b") {
         for cap in not_null_regex.captures_iter(create_sql) {
@@ -746,7 +771,7 @@ fn parse_table_constraints(table_name: &str, create_sql: &str) -> Option<Vec<Con
             }
         }
     }
-    
+
     if constraints.is_empty() {
         None
     } else {
@@ -762,25 +787,29 @@ struct DefaultInfo {
 
 fn parse_column_defaults(table_name: &str, create_sql: &str) -> Option<Vec<DefaultInfo>> {
     use regex::Regex;
-    
+
     let mut defaults = Vec::new();
-    
+
     // Parse DEFAULT clauses - look for column definitions with DEFAULT
     if let Ok(default_regex) = Regex::new(r"(?i)\b(\w+)\s+[^,\)]*\bDEFAULT\s+([^,\)]+)") {
         for cap in default_regex.captures_iter(create_sql) {
             if let (Some(column_name), Some(default_value)) = (cap.get(1), cap.get(2)) {
                 // Get column number by counting columns before this one
                 let column_num = get_column_number(create_sql, column_name.as_str()).unwrap_or(1);
-                
+
                 defaults.push(DefaultInfo {
-                    oid: generate_table_oid(&format!("{}_{}_default", table_name, column_name.as_str())),
+                    oid: generate_table_oid(&format!(
+                        "{}_{}_default",
+                        table_name,
+                        column_name.as_str()
+                    )),
                     column_num,
                     default_expr: default_value.as_str().trim().to_string(),
                 });
             }
         }
     }
-    
+
     if defaults.is_empty() {
         None
     } else {
@@ -791,51 +820,52 @@ fn parse_column_defaults(table_name: &str, create_sql: &str) -> Option<Vec<Defau
 /// Get the column number (1-based) for a given column name in a CREATE TABLE statement
 fn get_column_number(create_sql: &str, target_column: &str) -> Option<i16> {
     use regex::Regex;
-    
+
     // Extract the column definitions from CREATE TABLE
     if let Ok(table_regex) = Regex::new(r"(?i)CREATE\s+TABLE\s+[^(]+\(\s*(.+)\s*\)")
         && let Some(cap) = table_regex.captures(create_sql)
-            && let Some(columns_part) = cap.get(1) {
-                // Split by comma and look for our target column
-                let columns_str = columns_part.as_str();
-                let mut column_count = 0i16;
-                
-                // Simple column parsing - split by commas but be careful of nested parentheses
-                let mut paren_depth = 0;
-                let mut current_column = String::new();
-                
-                for ch in columns_str.chars() {
-                    match ch {
-                        '(' => {
-                            paren_depth += 1;
-                            current_column.push(ch);
-                        }
-                        ')' => {
-                            paren_depth -= 1;
-                            current_column.push(ch);
-                        }
-                        ',' if paren_depth == 0 => {
-                            // End of column definition
-                            column_count += 1;
-                            if current_column.trim().starts_with(target_column) {
-                                return Some(column_count);
-                            }
-                            current_column.clear();
-                        }
-                        _ => {
-                            current_column.push(ch);
-                        }
-                    }
+        && let Some(columns_part) = cap.get(1)
+    {
+        // Split by comma and look for our target column
+        let columns_str = columns_part.as_str();
+        let mut column_count = 0i16;
+
+        // Simple column parsing - split by commas but be careful of nested parentheses
+        let mut paren_depth = 0;
+        let mut current_column = String::new();
+
+        for ch in columns_str.chars() {
+            match ch {
+                '(' => {
+                    paren_depth += 1;
+                    current_column.push(ch);
                 }
-                
-                // Check the last column
-                if !current_column.trim().is_empty() {
+                ')' => {
+                    paren_depth -= 1;
+                    current_column.push(ch);
+                }
+                ',' if paren_depth == 0 => {
+                    // End of column definition
                     column_count += 1;
                     if current_column.trim().starts_with(target_column) {
                         return Some(column_count);
                     }
+                    current_column.clear();
+                }
+                _ => {
+                    current_column.push(ch);
                 }
             }
-    
+        }
+
+        // Check the last column
+        if !current_column.trim().is_empty() {
+            column_count += 1;
+            if current_column.trim().starts_with(target_column) {
+                return Some(column_count);
+            }
+        }
+    }
+
     None
 }

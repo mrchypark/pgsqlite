@@ -23,12 +23,12 @@ pub(super) fn register_v6_varchar_constraints(registry: &mut BTreeMap<u32, Migra
             "#,
             r#"
             -- Create index for fast constraint lookups
-            CREATE INDEX IF NOT EXISTS idx_string_constraints_table 
+            CREATE INDEX IF NOT EXISTS idx_string_constraints_table
             ON __pgsqlite_string_constraints(table_name);
             "#,
             r#"
             -- Update schema version
-            UPDATE __pgsqlite_metadata 
+            UPDATE __pgsqlite_metadata
             SET value = '6', updated_at = strftime('%s', 'now')
             WHERE key = 'schema_version';
             "#,
@@ -38,11 +38,11 @@ pub(super) fn register_v6_varchar_constraints(registry: &mut BTreeMap<u32, Migra
             -- We would need to recreate the table without the column
             DROP INDEX IF EXISTS idx_string_constraints_table;
             DROP TABLE IF EXISTS __pgsqlite_string_constraints;
-            
+
             -- For __pgsqlite_schema, we'd need to recreate it without type_modifier
             -- This is left as an exercise since downgrade is rarely needed
-            
-            UPDATE __pgsqlite_metadata 
+
+            UPDATE __pgsqlite_metadata
             SET value = '5', updated_at = strftime('%s', 'now')
             WHERE key = 'schema_version';
         "#)),
@@ -52,13 +52,15 @@ pub(super) fn register_v6_varchar_constraints(registry: &mut BTreeMap<u32, Migra
 
 /// Version 7: NUMERIC/DECIMAL precision and scale constraints
 pub(super) fn register_v7_numeric_constraints(registry: &mut BTreeMap<u32, Migration>) {
-    registry.insert(7, Migration {
-        version: 7,
-        name: "numeric_constraints",
-        description: "Add support for NUMERIC/DECIMAL precision and scale constraints",
-        up: MigrationAction::SqlBatch(&[
-            // Create table for numeric constraints
-            r#"
+    registry.insert(
+        7,
+        Migration {
+            version: 7,
+            name: "numeric_constraints",
+            description: "Add support for NUMERIC/DECIMAL precision and scale constraints",
+            up: MigrationAction::SqlBatch(&[
+                // Create table for numeric constraints
+                r#"
             CREATE TABLE IF NOT EXISTS __pgsqlite_numeric_constraints (
                 table_name TEXT NOT NULL,
                 column_name TEXT NOT NULL,
@@ -67,30 +69,31 @@ pub(super) fn register_v7_numeric_constraints(registry: &mut BTreeMap<u32, Migra
                 PRIMARY KEY (table_name, column_name)
             );
             "#,
-            
-            // Create index for efficient lookups
-            r#"
-            CREATE INDEX IF NOT EXISTS idx_numeric_constraints_table 
+                // Create index for efficient lookups
+                r#"
+            CREATE INDEX IF NOT EXISTS idx_numeric_constraints_table
             ON __pgsqlite_numeric_constraints(table_name);
             "#,
-            
-            // Update schema version
-            r#"
-            UPDATE __pgsqlite_metadata 
+                // Update schema version
+                r#"
+            UPDATE __pgsqlite_metadata
             SET value = '7', updated_at = strftime('%s', 'now')
             WHERE key = 'schema_version';
             "#,
-        ]),
-        down: Some(MigrationAction::Sql(r#"
+            ]),
+            down: Some(MigrationAction::Sql(
+                r#"
             DROP INDEX IF EXISTS idx_numeric_constraints_table;
             DROP TABLE IF EXISTS __pgsqlite_numeric_constraints;
-            
-            UPDATE __pgsqlite_metadata 
+
+            UPDATE __pgsqlite_metadata
             SET value = '6', updated_at = strftime('%s', 'now')
             WHERE key = 'schema_version';
-        "#)),
-        dependencies: vec![6],
-    });
+        "#,
+            )),
+            dependencies: vec![6],
+        },
+    );
 }
 
 /// Version 8: Array type support
@@ -110,22 +113,22 @@ pub(super) fn register_v8_array_support(registry: &mut BTreeMap<u32, Migration>)
                 PRIMARY KEY (table_name, column_name)
             );
             "#,
-            
+
             // Create index for efficient lookups
             r#"
-            CREATE INDEX IF NOT EXISTS idx_array_types_table 
+            CREATE INDEX IF NOT EXISTS idx_array_types_table
             ON __pgsqlite_array_types(table_name);
             "#,
-            
+
             // Drop the old pg_type view
             r#"
             DROP VIEW IF EXISTS pg_type;
             "#,
-            
+
             // Recreate pg_type view with typarray field
             r#"
             CREATE VIEW pg_type AS
-            SELECT 
+            SELECT
                 oid,
                 typname,
                 typtype,
@@ -174,10 +177,10 @@ pub(super) fn register_v8_array_support(registry: &mut BTreeMap<u32, Migration>)
                 UNION ALL SELECT 3807, '_jsonb', 'b', 3802, 0, 0, 11
             );
             "#,
-            
+
             // Update schema version
             r#"
-            UPDATE __pgsqlite_metadata 
+            UPDATE __pgsqlite_metadata
             SET value = '8', updated_at = strftime('%s', 'now')
             WHERE key = 'schema_version';
             "#,
@@ -185,11 +188,11 @@ pub(super) fn register_v8_array_support(registry: &mut BTreeMap<u32, Migration>)
         down: Some(MigrationAction::Sql(r#"
             DROP INDEX IF EXISTS idx_array_types_table;
             DROP TABLE IF EXISTS __pgsqlite_array_types;
-            
+
             -- Restore original pg_type view without typarray
             DROP VIEW IF EXISTS pg_type;
             CREATE VIEW pg_type AS
-            SELECT 
+            SELECT
                 oid,
                 typname,
                 typtype,
@@ -216,8 +219,8 @@ pub(super) fn register_v8_array_support(registry: &mut BTreeMap<u32, Migration>)
                 UNION ALL SELECT 2950, 'uuid', 'b', 0, 0, 11
                 UNION ALL SELECT 3802, 'jsonb', 'b', 0, 0, 11
             );
-            
-            UPDATE __pgsqlite_metadata 
+
+            UPDATE __pgsqlite_metadata
             SET value = '7', updated_at = strftime('%s', 'now')
             WHERE key = 'schema_version';
         "#)),
@@ -227,13 +230,15 @@ pub(super) fn register_v8_array_support(registry: &mut BTreeMap<u32, Migration>)
 
 /// Version 9: Full-Text Search support
 pub(super) fn register_v9_fts_support(registry: &mut BTreeMap<u32, Migration>) {
-    registry.insert(9, Migration {
-        version: 9,
-        name: "fts_support",
-        description: "Add PostgreSQL Full-Text Search support using FTS5",
-        up: MigrationAction::SqlBatch(&[
-            // Create FTS metadata table
-            r#"
+    registry.insert(
+        9,
+        Migration {
+            version: 9,
+            name: "fts_support",
+            description: "Add PostgreSQL Full-Text Search support using FTS5",
+            up: MigrationAction::SqlBatch(&[
+                // Create FTS metadata table
+                r#"
             CREATE TABLE IF NOT EXISTS __pgsqlite_fts_metadata (
                 table_name TEXT NOT NULL,
                 column_name TEXT NOT NULL,
@@ -244,66 +249,64 @@ pub(super) fn register_v9_fts_support(registry: &mut BTreeMap<u32, Migration>) {
                 PRIMARY KEY (table_name, column_name)
             );
             "#,
-            
-            // Add FTS columns to schema table
-            r#"
+                // Add FTS columns to schema table
+                r#"
             ALTER TABLE __pgsqlite_schema ADD COLUMN fts_table_name TEXT;
             "#,
-            r#"
+                r#"
             ALTER TABLE __pgsqlite_schema ADD COLUMN fts_config TEXT DEFAULT 'english';
             "#,
-            r#"
+                r#"
             ALTER TABLE __pgsqlite_schema ADD COLUMN fts_weights TEXT;  -- JSON mapping
             "#,
-            
-            // Create index for efficient FTS metadata lookups
-            r#"
-            CREATE INDEX IF NOT EXISTS idx_fts_metadata_table 
+                // Create index for efficient FTS metadata lookups
+                r#"
+            CREATE INDEX IF NOT EXISTS idx_fts_metadata_table
             ON __pgsqlite_fts_metadata(table_name);
             "#,
-            
-            // Create table for type map if it doesn't exist
-            r#"
+                // Create table for type map if it doesn't exist
+                r#"
             CREATE TABLE IF NOT EXISTS __pgsqlite_type_map (
                 pg_type TEXT PRIMARY KEY,
                 sqlite_type TEXT NOT NULL,
                 oid INTEGER NOT NULL UNIQUE
             );
             "#,
-            
-            // Register FTS types in type map
-            r#"
+                // Register FTS types in type map
+                r#"
             INSERT OR IGNORE INTO __pgsqlite_type_map (pg_type, sqlite_type, oid)
-            VALUES 
+            VALUES
                 ('tsvector', 'TEXT', 3614),
                 ('tsquery', 'TEXT', 3615),
                 ('regconfig', 'TEXT', 3734);
             "#,
-            
-            // Update schema version
-            r#"
-            UPDATE __pgsqlite_metadata 
+                // Update schema version
+                r#"
+            UPDATE __pgsqlite_metadata
             SET value = '9', updated_at = strftime('%s', 'now')
             WHERE key = 'schema_version';
             "#,
-        ]),
-        down: Some(MigrationAction::Sql(r#"
+            ]),
+            down: Some(MigrationAction::Sql(
+                r#"
             DROP INDEX IF EXISTS idx_fts_metadata_table;
             DROP TABLE IF EXISTS __pgsqlite_fts_metadata;
-            
+
             -- Note: We can't easily remove columns from __pgsqlite_schema in SQLite
             -- Would need to recreate the table without the FTS columns
-            
+
             -- Remove FTS types from type map
-            DELETE FROM __pgsqlite_type_map 
+            DELETE FROM __pgsqlite_type_map
             WHERE pg_type IN ('tsvector', 'tsquery', 'regconfig');
-            
-            UPDATE __pgsqlite_metadata 
+
+            UPDATE __pgsqlite_metadata
             SET value = '8', updated_at = strftime('%s', 'now')
             WHERE key = 'schema_version';
-        "#)),
-        dependencies: vec![8],
-    });
+        "#,
+            )),
+            dependencies: vec![8],
+        },
+    );
 }
 
 /// Version 10: Add typcategory column to pg_type view
@@ -317,11 +320,11 @@ pub(super) fn register_v10_typcategory_support(registry: &mut BTreeMap<u32, Migr
             r#"
             DROP VIEW IF EXISTS pg_type;
             "#,
-            
+
             // Recreate pg_type view with typcategory field
             r#"
             CREATE VIEW pg_type AS
-            SELECT 
+            SELECT
                 oid,
                 typname,
                 typtype,
@@ -385,7 +388,7 @@ pub(super) fn register_v10_typcategory_support(registry: &mut BTreeMap<u32, Migr
                 UNION ALL SELECT 199, '_json', 'b', 114, 0, 0, 11, 'A'
                 -- ENUM types from __pgsqlite_enum_types (category 'E')
                 UNION ALL
-                SELECT 
+                SELECT
                     e.type_oid as oid,
                     e.type_name as typname,
                     'e' as typtype,
@@ -397,20 +400,20 @@ pub(super) fn register_v10_typcategory_support(registry: &mut BTreeMap<u32, Migr
                 FROM __pgsqlite_enum_types e
             );
             "#,
-            
+
             // Create pg_enum view for ENUM values
             r#"
             CREATE VIEW IF NOT EXISTS pg_enum AS
-            SELECT 
+            SELECT
                 v.type_oid as enumtypid,
                 v.sort_order as enumsortorder,
                 v.label as enumlabel
             FROM __pgsqlite_enum_values v;
             "#,
-            
+
             // Update schema version
             r#"
-            UPDATE __pgsqlite_metadata 
+            UPDATE __pgsqlite_metadata
             SET value = '10', updated_at = strftime('%s', 'now')
             WHERE key = 'schema_version';
             "#,
@@ -418,11 +421,11 @@ pub(super) fn register_v10_typcategory_support(registry: &mut BTreeMap<u32, Migr
         down: Some(MigrationAction::Sql(r#"
             -- Drop pg_enum view
             DROP VIEW IF EXISTS pg_enum;
-            
+
             -- Restore v8 pg_type view without typcategory
             DROP VIEW IF EXISTS pg_type;
             CREATE VIEW pg_type AS
-            SELECT 
+            SELECT
                 oid,
                 typname,
                 typtype,
@@ -485,7 +488,7 @@ pub(super) fn register_v10_typcategory_support(registry: &mut BTreeMap<u32, Migr
                 UNION ALL SELECT 199, '_json', 'b', 114, 0, 0, 11
                 -- ENUM types from __pgsqlite_enum_types
                 UNION ALL
-                SELECT 
+                SELECT
                     e.type_oid as oid,
                     e.type_name as typname,
                     'e' as typtype,
@@ -495,8 +498,8 @@ pub(super) fn register_v10_typcategory_support(registry: &mut BTreeMap<u32, Migr
                     e.namespace_oid as typnamespace
                 FROM __pgsqlite_enum_types e
             );
-            
-            UPDATE __pgsqlite_metadata 
+
+            UPDATE __pgsqlite_metadata
             SET value = '9', updated_at = strftime('%s', 'now')
             WHERE key = 'schema_version';
         "#)),
@@ -514,11 +517,11 @@ pub(super) fn register_v11_fix_catalog_views(registry: &mut BTreeMap<u32, Migrat
             // Drop existing views
             "DROP VIEW IF EXISTS pg_attribute;",
             "DROP VIEW IF EXISTS pg_class;",
-            
+
             // Recreate pg_class view with built-in functions
             r#"
             CREATE VIEW IF NOT EXISTS pg_class AS
-            SELECT 
+            SELECT
                 -- Generate stable OID from table name using SQLite's built-in functions
                 -- Use a deterministic formula based on the table name's character codes
                 -- Cast to TEXT to handle both numeric and string comparisons
@@ -532,7 +535,7 @@ pub(super) fn register_v11_fix_catalog_views(registry: &mut BTreeMap<u32, Migrat
                 AS TEXT) as oid,
                 name as relname,
                 2200 as relnamespace,  -- public schema
-                CASE 
+                CASE
                     WHEN type = 'table' THEN 'r'
                     WHEN type = 'view' THEN 'v'
                     WHEN type = 'index' THEN 'i'
@@ -579,11 +582,11 @@ pub(super) fn register_v11_fix_catalog_views(registry: &mut BTreeMap<u32, Migrat
               AND name NOT LIKE 'sqlite_%'
               AND name NOT LIKE '__pgsqlite_%';
             "#,
-            
+
             // Recreate pg_attribute view with built-in functions
             r#"
             CREATE VIEW IF NOT EXISTS pg_attribute AS
-            SELECT 
+            SELECT
                 -- Use same formula as pg_class to ensure consistent OIDs
                 CAST(
                     (
@@ -595,7 +598,7 @@ pub(super) fn register_v11_fix_catalog_views(registry: &mut BTreeMap<u32, Migrat
                 AS TEXT) as attrelid,     -- table OID
                 p.cid + 1 as attnum,                             -- column number (1-based)
                 p.name as attname,                               -- column name
-                CASE 
+                CASE
                     WHEN p.type LIKE '%INT%' THEN 23            -- int4
                     WHEN p.type = 'TEXT' THEN 25                -- text
                     WHEN p.type = 'REAL' THEN 700               -- float4
@@ -630,10 +633,10 @@ pub(super) fn register_v11_fix_catalog_views(registry: &mut BTreeMap<u32, Migrat
               AND m.name NOT LIKE 'sqlite_%'
               AND m.name NOT LIKE '__pgsqlite_%';
             "#,
-            
+
             // Update schema version
             r#"
-            UPDATE __pgsqlite_metadata 
+            UPDATE __pgsqlite_metadata
             SET value = '11', updated_at = strftime('%s', 'now')
             WHERE key = 'schema_version';
             "#,
@@ -642,15 +645,15 @@ pub(super) fn register_v11_fix_catalog_views(registry: &mut BTreeMap<u32, Migrat
             // Drop new views
             "DROP VIEW IF EXISTS pg_attribute;",
             "DROP VIEW IF EXISTS pg_class;",
-            
+
             // Restore old views with oid_hash (note: this won't work without the function)
             r#"
             CREATE VIEW IF NOT EXISTS pg_class AS
-            SELECT 
+            SELECT
                 CAST(oid_hash(name) AS TEXT) as oid,
                 name as relname,
                 2200 as relnamespace,
-                CASE 
+                CASE
                     WHEN type = 'table' THEN 'r'
                     WHEN type = 'view' THEN 'v'
                     WHEN type = 'index' THEN 'i'
@@ -689,10 +692,10 @@ pub(super) fn register_v11_fix_catalog_views(registry: &mut BTreeMap<u32, Migrat
               AND name NOT LIKE 'sqlite_%'
               AND name NOT LIKE '__pgsqlite_%';
             "#,
-            
+
             r#"
             CREATE VIEW IF NOT EXISTS pg_attribute AS
-            SELECT 
+            SELECT
                 CAST(
                     (
                         (unicode(substr(m.name, 1, 1)) * 1000000) +
@@ -703,7 +706,7 @@ pub(super) fn register_v11_fix_catalog_views(registry: &mut BTreeMap<u32, Migrat
                 AS TEXT) as attrelid,
                 p.cid + 1 as attnum,
                 p.name as attname,
-                CASE 
+                CASE
                     WHEN p.type LIKE '%INT%' THEN 23
                     WHEN p.type = 'TEXT' THEN 25
                     WHEN p.type = 'REAL' THEN 700
@@ -738,10 +741,10 @@ pub(super) fn register_v11_fix_catalog_views(registry: &mut BTreeMap<u32, Migrat
               AND m.name NOT LIKE 'sqlite_%'
               AND m.name NOT LIKE '__pgsqlite_%';
             "#,
-            
+
             // Restore version
             r#"
-            UPDATE __pgsqlite_metadata 
+            UPDATE __pgsqlite_metadata
             SET value = '10', updated_at = strftime('%s', 'now')
             WHERE key = 'schema_version';
             "#,
@@ -769,11 +772,11 @@ pub(super) fn register_v12_comment_system(registry: &mut BTreeMap<u32, Migration
             );
 
             -- Index for fast lookups
-            CREATE INDEX IF NOT EXISTS idx_comments_lookup 
+            CREATE INDEX IF NOT EXISTS idx_comments_lookup
             ON __pgsqlite_comments(object_oid, catalog_name, subobject_id);
-            
+
             -- Update schema version
-            UPDATE __pgsqlite_metadata 
+            UPDATE __pgsqlite_metadata
             SET value = '12', updated_at = strftime('%s', 'now')
             WHERE key = 'schema_version';
         "#),
@@ -781,9 +784,9 @@ pub(super) fn register_v12_comment_system(registry: &mut BTreeMap<u32, Migration
             -- Remove comments table
             DROP TABLE IF EXISTS __pgsqlite_comments;
             DROP INDEX IF EXISTS idx_comments_lookup;
-            
+
             -- Restore schema version
-            UPDATE __pgsqlite_metadata 
+            UPDATE __pgsqlite_metadata
             SET value = '11', updated_at = strftime('%s', 'now')
             WHERE key = 'schema_version';
         "#)),

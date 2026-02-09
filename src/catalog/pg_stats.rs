@@ -1,9 +1,9 @@
-use crate::session::db_handler::{DbHandler, DbResponse};
-use crate::PgSqliteError;
-use sqlparser::ast::{Select, SelectItem, Expr};
-use tracing::debug;
-use std::collections::HashMap;
 use super::where_evaluator::WhereEvaluator;
+use crate::PgSqliteError;
+use crate::session::db_handler::{DbHandler, DbResponse};
+use sqlparser::ast::{Expr, Select, SelectItem};
+use std::collections::HashMap;
+use tracing::debug;
 
 pub struct PgStatsHandler;
 
@@ -79,7 +79,10 @@ impl PgStatsHandler {
                         selected.push(col_name);
                     }
                 }
-                SelectItem::ExprWithAlias { expr: Expr::Identifier(ident), alias } => {
+                SelectItem::ExprWithAlias {
+                    expr: Expr::Identifier(ident),
+                    alias,
+                } => {
                     let col_name = ident.value.to_lowercase();
                     if all_columns.contains(&col_name) {
                         selected.push(alias.value.clone());
@@ -95,7 +98,10 @@ impl PgStatsHandler {
                     // The actual function will be handled differently
                     selected.push("count".to_string());
                 }
-                SelectItem::ExprWithAlias { expr: Expr::Function(_), alias } => {
+                SelectItem::ExprWithAlias {
+                    expr: Expr::Function(_),
+                    alias,
+                } => {
                     // For aliased functions
                     selected.push(alias.value.clone());
                 }
@@ -106,7 +112,9 @@ impl PgStatsHandler {
         selected
     }
 
-    async fn get_table_statistics(db: &DbHandler) -> Result<Vec<HashMap<String, Vec<u8>>>, PgSqliteError> {
+    async fn get_table_statistics(
+        db: &DbHandler,
+    ) -> Result<Vec<HashMap<String, Vec<u8>>>, PgSqliteError> {
         let mut stats = Vec::new();
 
         // Get all tables from SQLite
@@ -131,12 +139,30 @@ impl PgStatsHandler {
                 // Generate realistic statistics based on column type and name
                 let column_stats = Self::generate_column_statistics(&table_name, &column_info);
 
-                stat.insert("null_frac".to_string(), column_stats.null_frac.as_bytes().to_vec());
-                stat.insert("n_distinct".to_string(), column_stats.n_distinct.as_bytes().to_vec());
-                stat.insert("most_common_vals".to_string(), column_stats.most_common_vals.as_bytes().to_vec());
-                stat.insert("most_common_freqs".to_string(), column_stats.most_common_freqs.as_bytes().to_vec());
-                stat.insert("histogram_bounds".to_string(), column_stats.histogram_bounds.as_bytes().to_vec());
-                stat.insert("correlation".to_string(), column_stats.correlation.as_bytes().to_vec());
+                stat.insert(
+                    "null_frac".to_string(),
+                    column_stats.null_frac.as_bytes().to_vec(),
+                );
+                stat.insert(
+                    "n_distinct".to_string(),
+                    column_stats.n_distinct.as_bytes().to_vec(),
+                );
+                stat.insert(
+                    "most_common_vals".to_string(),
+                    column_stats.most_common_vals.as_bytes().to_vec(),
+                );
+                stat.insert(
+                    "most_common_freqs".to_string(),
+                    column_stats.most_common_freqs.as_bytes().to_vec(),
+                );
+                stat.insert(
+                    "histogram_bounds".to_string(),
+                    column_stats.histogram_bounds.as_bytes().to_vec(),
+                );
+                stat.insert(
+                    "correlation".to_string(),
+                    column_stats.correlation.as_bytes().to_vec(),
+                );
                 stat.insert("most_common_elems".to_string(), b"".to_vec()); // NULL for non-arrays
                 stat.insert("most_common_elem_freqs".to_string(), b"".to_vec()); // NULL for non-arrays
                 stat.insert("elem_count_histogram".to_string(), b"".to_vec()); // NULL for non-arrays
@@ -153,14 +179,16 @@ impl PgStatsHandler {
 
         // Create a temporary connection to read the tables
         // This is safe because we're just reading metadata, not user data
-        let conn = rusqlite::Connection::open(&db.db_path).map_err(PgSqliteError::Sqlite)?;
+        let conn = db
+            .open_dedicated_connection()
+            .map_err(PgSqliteError::Sqlite)?;
 
         let query = "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '__pgsqlite_%'";
 
         let mut stmt = conn.prepare(query).map_err(PgSqliteError::Sqlite)?;
-        let rows = stmt.query_map([], |row| {
-            row.get::<_, String>(0)
-        }).map_err(PgSqliteError::Sqlite)?;
+        let rows = stmt
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(PgSqliteError::Sqlite)?;
 
         debug!("get_all_tables direct query");
         for table_name in rows.flatten() {
@@ -171,21 +199,28 @@ impl PgStatsHandler {
         Ok(tables)
     }
 
-    async fn get_table_columns(db: &DbHandler, table_name: &str) -> Result<Vec<ColumnInfo>, PgSqliteError> {
+    async fn get_table_columns(
+        db: &DbHandler,
+        table_name: &str,
+    ) -> Result<Vec<ColumnInfo>, PgSqliteError> {
         let mut columns = Vec::new();
 
         // Create a temporary connection to read the columns
         // This is safe because we're just reading metadata, not user data
-        let conn = rusqlite::Connection::open(&db.db_path).map_err(PgSqliteError::Sqlite)?;
+        let conn = db
+            .open_dedicated_connection()
+            .map_err(PgSqliteError::Sqlite)?;
 
         let query = format!("PRAGMA table_info({})", table_name);
 
         let mut stmt = conn.prepare(&query).map_err(PgSqliteError::Sqlite)?;
-        let rows = stmt.query_map([], |row| {
-            let name: String = row.get(1)?;
-            let data_type: String = row.get(2)?;
-            Ok(ColumnInfo { name, data_type })
-        }).map_err(PgSqliteError::Sqlite)?;
+        let rows = stmt
+            .query_map([], |row| {
+                let name: String = row.get(1)?;
+                let data_type: String = row.get(2)?;
+                Ok(ColumnInfo { name, data_type })
+            })
+            .map_err(PgSqliteError::Sqlite)?;
 
         for column_info in rows.flatten() {
             columns.push(column_info);
@@ -213,7 +248,10 @@ impl PgStatsHandler {
                 }
             }
             "REAL" | "FLOAT" | "DOUBLE" | "NUMERIC" | "DECIMAL" => {
-                if column_name.contains("price") || column_name.contains("amount") || column_name.contains("cost") {
+                if column_name.contains("price")
+                    || column_name.contains("amount")
+                    || column_name.contains("cost")
+                {
                     // Monetary values - many distinct, some nulls
                     ("0.15", "500", "0.2")
                 } else {
@@ -228,7 +266,10 @@ impl PgStatsHandler {
                 } else if column_name.contains("email") {
                     // Emails - unique or near-unique
                     ("0.02", "-0.9", "0.05") // n_distinct = -0.9 means 90% unique
-                } else if column_name.contains("status") || column_name.contains("type") || column_name.contains("category") {
+                } else if column_name.contains("status")
+                    || column_name.contains("type")
+                    || column_name.contains("category")
+                {
                     // Categorical data - few distinct values
                     ("0.1", "10", "0.7")
                 } else {
@@ -251,7 +292,8 @@ impl PgStatsHandler {
         };
 
         // Generate most common values and frequencies based on type
-        let (most_common_vals, most_common_freqs) = Self::generate_common_values(column_name, data_type);
+        let (most_common_vals, most_common_freqs) =
+            Self::generate_common_values(column_name, data_type);
 
         // Generate histogram bounds
         let histogram_bounds = Self::generate_histogram_bounds(data_type);
@@ -268,14 +310,18 @@ impl PgStatsHandler {
 
     fn generate_common_values(column_name: &str, data_type: &str) -> (String, String) {
         match data_type {
-            "BOOLEAN" | "BOOL" => {
-                ("{t,f}".to_string(), "{0.6,0.4}".to_string())
-            }
+            "BOOLEAN" | "BOOL" => ("{t,f}".to_string(), "{0.6,0.4}".to_string()),
             "TEXT" | "VARCHAR" | "CHAR" => {
                 if column_name.contains("status") {
-                    ("{active,inactive,pending}".to_string(), "{0.7,0.2,0.1}".to_string())
+                    (
+                        "{active,inactive,pending}".to_string(),
+                        "{0.7,0.2,0.1}".to_string(),
+                    )
                 } else if column_name.contains("type") || column_name.contains("category") {
-                    ("{standard,premium,basic}".to_string(), "{0.5,0.3,0.2}".to_string())
+                    (
+                        "{standard,premium,basic}".to_string(),
+                        "{0.5,0.3,0.2}".to_string(),
+                    )
                 } else {
                     // Names and other text fields typically don't have common values
                     ("".to_string(), "".to_string())
@@ -283,15 +329,16 @@ impl PgStatsHandler {
             }
             "INTEGER" | "INT" | "BIGINT" => {
                 if column_name.contains("count") || column_name.contains("quantity") {
-                    ("{1,2,3,4,5}".to_string(), "{0.3,0.25,0.2,0.15,0.1}".to_string())
+                    (
+                        "{1,2,3,4,5}".to_string(),
+                        "{0.3,0.25,0.2,0.15,0.1}".to_string(),
+                    )
                 } else {
                     // Most integer columns don't have obvious common values
                     ("".to_string(), "".to_string())
                 }
             }
-            _ => {
-                ("".to_string(), "".to_string())
-            }
+            _ => ("".to_string(), "".to_string()),
         }
     }
 
