@@ -2,33 +2,32 @@ use anyhow::Result;
 use bytes::{Buf, BytesMut};
 use futures::SinkExt;
 use futures::StreamExt;
-use std::sync::Arc;
 use std::path::PathBuf;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::task::{Context, Poll};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::TcpListener;
 #[cfg(unix)]
 use tokio::net::UnixListener;
+use tokio_rustls::TlsAcceptor;
 use tokio_util::codec::Framed;
 use tracing::{debug, error, info};
-use tokio_rustls::TlsAcceptor;
 
-use pgsqlite::config::Config;
+use pgsqlite::config::{AuthMode, Config, DatabaseLayout};
+use pgsqlite::migration::MigrationRunner;
 use pgsqlite::protocol::{
-    AuthenticationMessage, BackendMessage, ErrorResponse, FrontendMessage, PostgresCodec,
-    TransactionStatus, check_global_rate_limit, record_global_failure,
+    AuthResult, BackendMessage, ErrorResponse, FrontendMessage, PostgresCodec, ServerAuth,
+    TransactionStatus, check_global_rate_limit, perform_authentication, record_global_failure,
 };
-use pgsqlite::security::events;
 use pgsqlite::query::QueryExecutor;
+use pgsqlite::security::events;
 use pgsqlite::session::{
-    message_loop::{handle_extended_or_aux_message, ExtendedMessageOptions},
-    get_or_create_handler, SessionState,
+    SessionState, get_or_create_handler,
+    message_loop::{ExtendedMessageOptions, handle_extended_or_aux_message},
 };
 use pgsqlite::ssl::CertificateManager;
-use pgsqlite::migration::MigrationRunner;
 use pgsqlite::system_db::SystemDb;
-use pgsqlite::config::DatabaseLayout;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -55,7 +54,8 @@ async fn main() -> Result<()> {
         }
         DatabaseLayout::File { path } => {
             if let Some(parent) = path.parent()
-                && !parent.as_os_str().is_empty() {
+                && !parent.as_os_str().is_empty()
+            {
                 std::fs::create_dir_all(parent)?;
             }
         }
@@ -64,7 +64,7 @@ async fn main() -> Result<()> {
     // Handle migration command
     if config.migrate {
         info!("Running database migrations...");
-        
+
         // In directory mode, migrations apply to the default database file.
         let db_path = match &layout {
             DatabaseLayout::InMemory => ":memory:".to_string(),
@@ -78,18 +78,22 @@ async fn main() -> Result<()> {
         // Open connection directly for migration
         let conn = rusqlite::Connection::open(&db_path)
             .map_err(|e| anyhow::anyhow!("Failed to open database: {}", e))?;
-        
+
         // Register functions needed for migrations
         pgsqlite::functions::register_all_functions(&conn)
             .map_err(|e| anyhow::anyhow!("Failed to register functions: {}", e))?;
-        
+
         let mut runner = MigrationRunner::new(conn);
         match runner.run_pending_migrations() {
             Ok(applied) => {
                 if applied.is_empty() {
                     info!("No pending migrations. Database is up to date.");
                 } else {
-                    info!("Successfully applied {} migrations: {:?}", applied.len(), applied);
+                    info!(
+                        "Successfully applied {} migrations: {:?}",
+                        applied.len(),
+                        applied
+                    );
                 }
                 std::process::exit(0);
             }
@@ -111,8 +115,9 @@ async fn main() -> Result<()> {
     // Unix socket setup (only on Unix platforms)
     #[cfg(unix)]
     let (socket_path, unix_listener) = {
-        let socket_path = PathBuf::from(&config.socket_dir).join(format!(".s.PGSQL.{}", config.port));
-        
+        let socket_path =
+            PathBuf::from(&config.socket_dir).join(format!(".s.PGSQL.{}", config.port));
+
         // Remove existing socket file if it exists
         if socket_path.exists() {
             std::fs::remove_file(&socket_path)?;
@@ -121,18 +126,24 @@ async fn main() -> Result<()> {
         // Create Unix socket listener
         let unix_listener = UnixListener::bind(&socket_path)?;
         info!("Unix socket created at: {}", socket_path.display());
-        
-        // Set socket permissions to 0777 for compatibility
+
+        // Set Unix socket file permissions (default is restrictive).
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(0o777))?;
-        
+        let socket_mode = config.socket_permissions_mode().ok_or_else(|| {
+            anyhow::anyhow!("Invalid socket permissions: {}", config.socket_permissions)
+        })?;
+        std::fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(socket_mode))?;
+
         (socket_path, unix_listener)
     };
 
     // Create TCP listener if not disabled
     let tcp_listener = if !config.no_tcp {
-        let listener = TcpListener::bind(("0.0.0.0", config.port)).await?;
-        info!("TCP server listening on port {}", config.port);
+        let listener = TcpListener::bind((config.listen_addr, config.port)).await?;
+        info!(
+            "TCP server listening on {}:{}",
+            config.listen_addr, config.port
+        );
         Some(listener)
     } else {
         info!("TCP listener disabled, using Unix socket only");
@@ -154,7 +165,9 @@ async fn main() -> Result<()> {
     // Initialize SSL if enabled
     let tls_acceptor = if config.ssl {
         if config.no_tcp {
-            return Err(anyhow::anyhow!("SSL cannot be enabled when TCP is disabled"));
+            return Err(anyhow::anyhow!(
+                "SSL cannot be enabled when TCP is disabled"
+            ));
         }
         let cert_manager = CertificateManager::new(config.clone());
         let (acceptor, _cert_source) = cert_manager.initialize().await?;
@@ -177,7 +190,7 @@ async fn main() -> Result<()> {
             std::process::exit(0);
         });
     }
-    
+
     #[cfg(not(unix))]
     {
         tokio::spawn(async move {
@@ -185,7 +198,7 @@ async fn main() -> Result<()> {
             std::process::exit(0);
         });
     }
-    
+
     // Start periodic cache metrics logging
     let cache_metrics_interval = config.cache_metrics_interval_duration();
     tokio::spawn(async move {
@@ -201,7 +214,7 @@ async fn main() -> Result<()> {
     {
         loop {
             let config = config.clone();
-            
+
             tokio::select! {
                 // Handle TCP connections
                 result = async {
@@ -221,7 +234,7 @@ async fn main() -> Result<()> {
                           });
                     }
                 }
-                
+
                 // Handle Unix socket connections
                 result = unix_listener.accept() => {
                     if let Ok((stream, _addr)) = result {
@@ -237,22 +250,24 @@ async fn main() -> Result<()> {
             }
         }
     }
-    
+
     #[cfg(not(unix))]
     {
         // Windows/non-Unix: only handle TCP connections
         loop {
             let config = config.clone();
-            
+
             if let Some(ref listener) = tcp_listener {
                 if let Ok((stream, addr)) = listener.accept().await {
                     info!("New TCP connection from {}", addr);
                     let tls_acceptor = tls_acceptor.clone();
                     tokio::spawn(async move {
-                    if let Err(e) = handle_tcp_connection(stream, addr, config, tls_acceptor).await {
-                        error!("TCP connection error from {}: {}", addr, e);
-                    }
-                });
+                        if let Err(e) =
+                            handle_tcp_connection(stream, addr, config, tls_acceptor).await
+                        {
+                            error!("TCP connection error from {}: {}", addr, e);
+                        }
+                    });
                 }
             } else {
                 // No TCP listener and no Unix sockets on Windows
@@ -303,22 +318,22 @@ async fn handle_ssl_negotiation(
     tls_acceptor: Option<TlsAcceptor>,
 ) -> Result<()> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    
+
     // Read the first message to check if it's an SSL request
     let mut buf = vec![0u8; 8];
     stream.read_exact(&mut buf).await?;
-    
+
     // Check if this is an SSL request
     let len = i32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]);
     let code = i32::from_be_bytes([buf[4], buf[5], buf[6], buf[7]]);
-    
+
     if len == 8 && code == 80877103 {
         // This is an SSL request
         if let Some(tls_acceptor) = tls_acceptor {
             // SSL is enabled, send 'S' to indicate SSL is available
             stream.write_all(b"S").await?;
             stream.flush().await?;
-            
+
             // Perform TLS handshake
             let tls_stream = tls_acceptor.accept(stream).await?;
             info!("SSL connection established with {}", addr);
@@ -327,45 +342,49 @@ async fn handle_ssl_negotiation(
             events::connection_accepted(addr.ip(), true);
 
             // Handle the connection with TLS
-            handle_connection_generic(tls_stream, &addr.to_string(), config).await
+            handle_connection_generic(tls_stream, &addr.to_string(), Some(addr.ip()), config).await
         } else {
             // SSL is disabled, send 'N' to indicate SSL is not available
             stream.write_all(b"N").await?;
             stream.flush().await?;
             info!("Rejected SSL request from {} (SSL disabled)", addr);
-            
+
             // Log non-SSL connection acceptance
             events::connection_accepted(addr.ip(), false);
 
             // Continue with non-SSL connection
-            handle_connection_generic(stream, &addr.to_string(), config).await
+            handle_connection_generic(stream, &addr.to_string(), Some(addr.ip()), config).await
         }
     } else {
         // Not an SSL request, we need to handle this as a regular startup message
         // Create a new buffer with the data we already read
         let initial_data = BytesMut::from(&buf[..]);
-        
+
         // Log non-SSL connection acceptance
         events::connection_accepted(addr.ip(), false);
 
         // Create a custom stream that will first return our buffered data
         let stream_with_buffer = StreamWithBuffer::new(stream, initial_data);
-        handle_connection_generic(stream_with_buffer, &addr.to_string(), config).await
+        handle_connection_generic(
+            stream_with_buffer,
+            &addr.to_string(),
+            Some(addr.ip()),
+            config,
+        )
+        .await
     }
 }
 
 #[cfg(unix)]
-async fn handle_unix_connection(
-    stream: tokio::net::UnixStream,
-    config: Arc<Config>,
-) -> Result<()> {
+async fn handle_unix_connection(stream: tokio::net::UnixStream, config: Arc<Config>) -> Result<()> {
     info!("Handling Unix socket connection");
-    handle_connection_generic(stream, "unix-socket", config).await
+    handle_connection_generic(stream, "unix-socket", None, config).await
 }
 
 async fn handle_connection_generic<S>(
     stream: S,
     connection_info: &str,
+    client_ip: Option<std::net::IpAddr>,
     config: Arc<Config>,
 ) -> Result<()>
 where
@@ -385,7 +404,10 @@ where
         None => return Err(anyhow::anyhow!("Connection closed unexpectedly")),
     };
 
-    info!("Received startup message from {}: {:?}", connection_info, startup);
+    info!(
+        "Received startup message from {}: {:?}",
+        connection_info, startup
+    );
 
     // Extract session parameters
     let mut database = config.default_database.clone();
@@ -397,6 +419,24 @@ where
             "user" => user = value.clone(),
             _ => {}
         }
+    }
+
+    // Authenticate first to avoid spending resources on unauthenticated clients.
+    let auth = match config.auth {
+        AuthMode::Trust => ServerAuth::Trust,
+        AuthMode::Password => ServerAuth::CleartextPassword {
+            password: config.password.clone().unwrap_or_default(),
+        },
+    };
+    let auth_res = perform_authentication(&mut framed, &auth, &user).await?;
+    if auth_res == AuthResult::Failed {
+        events::authentication_failure(client_ip, &user, &database, "authentication_failed");
+        return Ok(());
+    }
+
+    // Log successful authentication
+    if let Some(ip) = client_ip {
+        events::authentication_success(ip, &user, &database);
     }
 
     let session = Arc::new(SessionState::new(database.clone(), user.clone()));
@@ -436,23 +476,16 @@ where
     // Create a connection for this session
     if let Err(e) = session.initialize_connection().await {
         error!("Failed to create session connection: {}", e);
-        return Err(anyhow::anyhow!("Failed to create session connection: {}", e));
+        return Err(anyhow::anyhow!(
+            "Failed to create session connection: {}",
+            e
+        ));
     }
-    
+
     // Note: cleanup is now handled by SessionState Drop implementation
     // when the session Arc is dropped
-    
+
     // We'll handle cleanup at the end of the function
-
-    // Send authentication OK
-    framed
-        .send(BackendMessage::Authentication(AuthenticationMessage::Ok))
-        .await?;
-
-    // Log successful authentication
-    if let Ok(client_ip) = connection_info.parse::<std::net::IpAddr>() {
-        events::authentication_success(client_ip, &user, &database);
-    }
 
     // Send parameter status messages
     for (key, value) in session.parameters.read().await.iter() {
@@ -479,7 +512,10 @@ where
         })
         .await?;
 
-    info!("Sent authentication and ready response to {}", connection_info);
+    info!(
+        "Sent authentication and ready response to {}",
+        connection_info
+    );
 
     // Main message loop
     while let Some(msg) = framed.next().await {
@@ -496,7 +532,9 @@ where
                         "53300".to_string(), // PostgreSQL error code for too many connections
                         "Rate limit exceeded".to_string(),
                     );
-                    framed.send(BackendMessage::ErrorResponse(Box::new(err))).await?;
+                    framed
+                        .send(BackendMessage::ErrorResponse(Box::new(err)))
+                        .await?;
 
                     // Send ReadyForQuery after error
                     framed
@@ -509,25 +547,31 @@ where
                 }
 
                 // Execute the query
-                match QueryExecutor::execute_query(&mut framed, &db_handler, &session, &sql, None).await {
+                match QueryExecutor::execute_query(&mut framed, &db_handler, &session, &sql, None)
+                    .await
+                {
                     Ok(()) => {
                         // Query executed successfully
                     }
                     Err(e) => {
                         error!("Query execution error: {}", e);
-                        
+
                         // If we're in a transaction, mark it as failed
                         // Let SQLAlchemy handle its own rollback to avoid double-rollback issues
                         if session.in_transaction().await {
-                            session.set_transaction_status(TransactionStatus::InFailedTransaction).await;
+                            session
+                                .set_transaction_status(TransactionStatus::InFailedTransaction)
+                                .await;
                         }
-                        
+
                         let err = ErrorResponse::new(
                             "ERROR".to_string(),
                             "42000".to_string(),
                             format!("Query execution failed: {e}"),
                         );
-                        framed.send(BackendMessage::ErrorResponse(Box::new(err))).await?;
+                        framed
+                            .send(BackendMessage::ErrorResponse(Box::new(err)))
+                            .await?;
                     }
                 }
 
@@ -542,16 +586,18 @@ where
             }
             FrontendMessage::Terminate => {
                 info!("Client {} requested termination", connection_info);
-                
+
                 // Clean up any active transaction before closing
                 if session.in_transaction().await {
                     info!("Rolling back active transaction before client disconnect");
                     if let Err(e) = db_handler.rollback_with_session(&session_id).await {
                         error!("Failed to rollback transaction on disconnect: {}", e);
                     }
-                    session.set_transaction_status(TransactionStatus::Idle).await;
+                    session
+                        .set_transaction_status(TransactionStatus::Idle)
+                        .await;
                 }
-                
+
                 break;
             }
             other => {
@@ -572,7 +618,7 @@ where
 
     // Clean up session connection explicitly
     session.cleanup_connection().await;
-    
+
     info!("Connection from {} closed", connection_info);
     Ok(())
 }
@@ -602,7 +648,7 @@ impl<S: AsyncRead + Unpin> AsyncRead for StreamWithBuffer<S> {
             self.buffer.advance(len);
             return Poll::Ready(Ok(()));
         }
-        
+
         // Then read from the underlying stream
         Pin::new(&mut self.stream).poll_read(cx, buf)
     }

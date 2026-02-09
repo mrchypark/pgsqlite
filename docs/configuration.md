@@ -17,12 +17,17 @@ pgsqlite can be configured through:
 | Option | CLI Flag | Environment Variable | Default | Description |
 |--------|----------|---------------------|---------|-------------|
 | Port | `--port`, `-p` | `PGSQLITE_PORT` | `5432` | PostgreSQL port to listen on |
+| Listen Address | `--listen-addr` | `PGSQLITE_LISTEN_ADDR` | `127.0.0.1` | TCP listen address (use `0.0.0.0` to listen on all interfaces) |
 | Database | `--database`, `-d` | `PGSQLITE_DATABASE` | `./data` | Database data directory (recommended) or a single `.db` file path (legacy) |
 | Default Database | `--default-database` | `PGSQLITE_DEFAULT_DATABASE` | `main` | Default database name used when client doesn't specify one |
 | Log Level | `--log-level` | `PGSQLITE_LOG_LEVEL` | `info` | Logging level (error, warn, info, debug, trace) |
 | In-Memory | `--in-memory` | `PGSQLITE_IN_MEMORY` | `false` | Use in-memory SQLite database |
 | Socket Directory | `--socket-dir` | `PGSQLITE_SOCKET_DIR` | `/tmp` | Directory for Unix domain socket |
+| Socket Permissions | `--socket-permissions` | `PGSQLITE_SOCKET_PERMISSIONS` | `0700` | Unix socket file permissions in octal (e.g. `0700`, `0777`) |
 | No TCP | `--no-tcp` | `PGSQLITE_NO_TCP` | `false` | Disable TCP listener, use only Unix socket |
+| Auth Mode | `--auth` | `PGSQLITE_AUTH` | `trust` | Authentication mode (`trust`, `password`) |
+| Password | `--password` | `PGSQLITE_PASSWORD` | None | Password for `--auth password` (cleartext password auth) |
+| Insecure Allow Remote Trust | `--insecure-allow-remote-trust` | `PGSQLITE_INSECURE_ALLOW_REMOTE_TRUST` | `false` | Allow non-loopback listen address with `--auth trust` (INSECURE) |
 
 ### SSL/TLS Configuration
 

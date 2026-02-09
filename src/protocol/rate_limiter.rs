@@ -1,12 +1,12 @@
+use crate::security::events;
+use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use parking_lot::RwLock;
 use thiserror::Error;
-use tracing::{debug, warn, info};
-use crate::security::events;
+use tracing::{debug, info, warn};
 
 #[derive(Error, Debug)]
 pub enum RateLimitError {
@@ -50,23 +50,26 @@ impl RateLimitConfig {
         let mut config = Self::default();
 
         if let Ok(val) = std::env::var("PGSQLITE_RATE_LIMIT_MAX_REQUESTS")
-            && let Ok(max_requests) = val.parse::<u32>() {
-                config.max_requests = max_requests;
-            }
+            && let Ok(max_requests) = val.parse::<u32>()
+        {
+            config.max_requests = max_requests;
+        }
 
         if let Ok(val) = std::env::var("PGSQLITE_RATE_LIMIT_WINDOW_SECS")
-            && let Ok(window_secs) = val.parse::<u64>() {
-                config.window_duration = Duration::from_secs(window_secs);
-            }
+            && let Ok(window_secs) = val.parse::<u64>()
+        {
+            config.window_duration = Duration::from_secs(window_secs);
+        }
 
         if let Ok(val) = std::env::var("PGSQLITE_RATE_LIMIT_PER_IP") {
             config.per_ip_limiting = val == "1" || val.to_lowercase() == "true";
         }
 
         if let Ok(val) = std::env::var("PGSQLITE_RATE_LIMIT_MAX_IPS")
-            && let Ok(max_ips) = val.parse::<usize>() {
-                config.max_tracked_ips = max_ips;
-            }
+            && let Ok(max_ips) = val.parse::<usize>()
+        {
+            config.max_tracked_ips = max_ips;
+        }
 
         config
     }
@@ -105,19 +108,22 @@ impl CircuitBreakerConfig {
         }
 
         if let Ok(val) = std::env::var("PGSQLITE_CIRCUIT_BREAKER_FAILURE_THRESHOLD")
-            && let Ok(threshold) = val.parse::<u32>() {
-                config.failure_threshold = threshold;
-            }
+            && let Ok(threshold) = val.parse::<u32>()
+        {
+            config.failure_threshold = threshold;
+        }
 
         if let Ok(val) = std::env::var("PGSQLITE_CIRCUIT_BREAKER_TIMEOUT_SECS")
-            && let Ok(timeout_secs) = val.parse::<u64>() {
-                config.timeout_duration = Duration::from_secs(timeout_secs);
-            }
+            && let Ok(timeout_secs) = val.parse::<u64>()
+        {
+            config.timeout_duration = Duration::from_secs(timeout_secs);
+        }
 
         if let Ok(val) = std::env::var("PGSQLITE_CIRCUIT_BREAKER_SUCCESS_THRESHOLD")
-            && let Ok(threshold) = val.parse::<u32>() {
-                config.success_threshold = threshold;
-            }
+            && let Ok(threshold) = val.parse::<u32>()
+        {
+            config.success_threshold = threshold;
+        }
 
         config
     }
@@ -126,9 +132,9 @@ impl CircuitBreakerConfig {
 /// Circuit breaker states
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CircuitState {
-    Closed,    // Normal operation
-    Open,      // Circuit is open, rejecting requests
-    HalfOpen,  // Testing if service is recovered
+    Closed,   // Normal operation
+    Open,     // Circuit is open, rejecting requests
+    HalfOpen, // Testing if service is recovered
 }
 
 /// Atomic rate limiting window tracking
@@ -165,16 +171,21 @@ impl RateLimitWindow {
 
         loop {
             let window_start = self.window_start_nanos.load(Ordering::Acquire);
-            let is_expired = current_nanos.saturating_sub(window_start) >= window_duration.as_nanos() as u64;
+            let is_expired =
+                current_nanos.saturating_sub(window_start) >= window_duration.as_nanos() as u64;
 
             if is_expired {
                 // Try to reset the window atomically
-                if self.window_start_nanos.compare_exchange_weak(
-                    window_start,
-                    current_nanos,
-                    Ordering::Release,
-                    Ordering::Relaxed
-                ).is_ok() {
+                if self
+                    .window_start_nanos
+                    .compare_exchange_weak(
+                        window_start,
+                        current_nanos,
+                        Ordering::Release,
+                        Ordering::Relaxed,
+                    )
+                    .is_ok()
+                {
                     // Successfully reset window, now reset counter and increment
                     self.requests.store(1, Ordering::Release);
                     return (1, true);
@@ -199,7 +210,8 @@ impl RateLimitWindow {
             .as_nanos() as u64;
 
         self.requests.store(0, Ordering::Release);
-        self.window_start_nanos.store(current_nanos, Ordering::Release);
+        self.window_start_nanos
+            .store(current_nanos, Ordering::Release);
     }
 }
 
@@ -234,9 +246,9 @@ impl CircuitBreakerState {
             CircuitState::HalfOpen => 2u32,
         };
 
-        (state_val << Self::STATE_SHIFT) |
-        ((failure_count & Self::COUNT_MASK) << Self::FAILURE_COUNT_SHIFT) |
-        (success_count & Self::COUNT_MASK)
+        (state_val << Self::STATE_SHIFT)
+            | ((failure_count & Self::COUNT_MASK) << Self::FAILURE_COUNT_SHIFT)
+            | (success_count & Self::COUNT_MASK)
     }
 
     fn unpack_state(packed: u32) -> (CircuitState, u32, u32) {
@@ -283,17 +295,11 @@ pub struct RateLimiter {
 impl RateLimiter {
     /// Create a new rate limiter with default configuration
     pub fn new() -> Self {
-        Self::with_config(
-            RateLimitConfig::default(),
-            CircuitBreakerConfig::default(),
-        )
+        Self::with_config(RateLimitConfig::default(), CircuitBreakerConfig::default())
     }
 
     /// Create a new rate limiter with custom configuration
-    pub fn with_config(
-        rate_config: RateLimitConfig,
-        circuit_config: CircuitBreakerConfig,
-    ) -> Self {
+    pub fn with_config(rate_config: RateLimitConfig, circuit_config: CircuitBreakerConfig) -> Self {
         let now_nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -341,7 +347,9 @@ impl RateLimiter {
             .unwrap_or_default()
             .as_nanos() as u64;
 
-        self.circuit_state.last_failure_time_nanos.store(current_nanos, Ordering::Release);
+        self.circuit_state
+            .last_failure_time_nanos
+            .store(current_nanos, Ordering::Release);
 
         loop {
             let packed = self.circuit_state.packed_state.load(Ordering::Acquire);
@@ -350,34 +358,43 @@ impl RateLimiter {
             let new_failure_count = failure_count.saturating_add(1);
 
             // Check if we should open the circuit
-            let (new_state, new_success_count) = if new_failure_count >= self.circuit_config.failure_threshold && state == CircuitState::Closed {
+            let (new_state, new_success_count) = if new_failure_count
+                >= self.circuit_config.failure_threshold
+                && state == CircuitState::Closed
+            {
                 // Set next attempt time
-                let next_attempt_nanos = current_nanos + self.circuit_config.timeout_duration.as_nanos() as u64;
-                self.circuit_state.next_attempt_time_nanos.store(next_attempt_nanos, Ordering::Release);
+                let next_attempt_nanos =
+                    current_nanos + self.circuit_config.timeout_duration.as_nanos() as u64;
+                self.circuit_state
+                    .next_attempt_time_nanos
+                    .store(next_attempt_nanos, Ordering::Release);
 
                 warn!(
                     "Circuit breaker opened due to {} failures (threshold: {})",
-                    new_failure_count,
-                    self.circuit_config.failure_threshold
+                    new_failure_count, self.circuit_config.failure_threshold
                 );
 
                 // Log security event for circuit breaker opening
-                events::circuit_breaker_opened(new_failure_count, self.circuit_config.failure_threshold);
+                events::circuit_breaker_opened(
+                    new_failure_count,
+                    self.circuit_config.failure_threshold,
+                );
 
                 (CircuitState::Open, 0)
             } else {
                 (state, success_count)
             };
 
-            let new_packed = CircuitBreakerState::pack_state(new_state, new_failure_count, new_success_count);
+            let new_packed =
+                CircuitBreakerState::pack_state(new_state, new_failure_count, new_success_count);
 
             // Atomic compare-exchange to update state
-            if self.circuit_state.packed_state.compare_exchange_weak(
-                packed,
-                new_packed,
-                Ordering::Release,
-                Ordering::Relaxed
-            ).is_ok() {
+            if self
+                .circuit_state
+                .packed_state
+                .compare_exchange_weak(packed, new_packed, Ordering::Release, Ordering::Relaxed)
+                .is_ok()
+            {
                 break;
             }
             // If CAS failed, retry
@@ -404,7 +421,10 @@ impl RateLimiter {
                 CircuitState::HalfOpen => {
                     let new_success_count = success_count.saturating_add(1);
                     if new_success_count >= self.circuit_config.success_threshold {
-                        info!("Circuit breaker closed after {} successful requests", new_success_count);
+                        info!(
+                            "Circuit breaker closed after {} successful requests",
+                            new_success_count
+                        );
                         (CircuitState::Closed, 0, 0)
                     } else {
                         (CircuitState::HalfOpen, failure_count, new_success_count)
@@ -416,15 +436,16 @@ impl RateLimiter {
                 }
             };
 
-            let new_packed = CircuitBreakerState::pack_state(new_state, new_failure_count, new_success_count);
+            let new_packed =
+                CircuitBreakerState::pack_state(new_state, new_failure_count, new_success_count);
 
             // Atomic compare-exchange to update state
-            if self.circuit_state.packed_state.compare_exchange_weak(
-                packed,
-                new_packed,
-                Ordering::Release,
-                Ordering::Relaxed
-            ).is_ok() {
+            if self
+                .circuit_state
+                .packed_state
+                .compare_exchange_weak(packed, new_packed, Ordering::Release, Ordering::Relaxed)
+                .is_ok()
+            {
                 break;
             }
             // If CAS failed, retry
@@ -446,16 +467,28 @@ impl RateLimiter {
                 CircuitState::Closed => return Ok(()),
                 CircuitState::Open => {
                     // Check if timeout has passed
-                    let next_attempt_nanos = self.circuit_state.next_attempt_time_nanos.load(Ordering::Acquire);
+                    let next_attempt_nanos = self
+                        .circuit_state
+                        .next_attempt_time_nanos
+                        .load(Ordering::Acquire);
                     if next_attempt_nanos > 0 && current_nanos >= next_attempt_nanos {
                         // Try to transition to half-open atomically
-                        let new_packed = CircuitBreakerState::pack_state(CircuitState::HalfOpen, failure_count, 0);
-                        if self.circuit_state.packed_state.compare_exchange_weak(
-                            packed,
-                            new_packed,
-                            Ordering::Release,
-                            Ordering::Relaxed
-                        ).is_ok() {
+                        let new_packed = CircuitBreakerState::pack_state(
+                            CircuitState::HalfOpen,
+                            failure_count,
+                            0,
+                        );
+                        if self
+                            .circuit_state
+                            .packed_state
+                            .compare_exchange_weak(
+                                packed,
+                                new_packed,
+                                Ordering::Release,
+                                Ordering::Relaxed,
+                            )
+                            .is_ok()
+                        {
                             debug!("Circuit breaker transitioned to half-open state");
                             return Ok(());
                         }
@@ -463,7 +496,7 @@ impl RateLimiter {
                         continue;
                     }
                     return Err(RateLimitError::CircuitBreakerOpen(
-                        "Service temporarily unavailable".to_string()
+                        "Service temporarily unavailable".to_string(),
                     ));
                 }
                 CircuitState::HalfOpen => {
@@ -478,27 +511,33 @@ impl RateLimiter {
     fn check_rate_limits(&self, client_ip: Option<IpAddr>) -> Result<(), RateLimitError> {
         // If per-IP limiting is enabled and we have an IP, check per-IP limits
         if self.rate_config.per_ip_limiting
-            && let Some(ip) = client_ip {
+            && let Some(ip) = client_ip
+        {
             let mut ip_windows = self.ip_windows.write();
 
             // Check if we're tracking too many IPs
-            if ip_windows.len() >= self.rate_config.max_tracked_ips && !ip_windows.contains_key(&ip) {
-                warn!("Too many IP addresses being tracked, falling back to global rate limiting for {}", ip);
+            if ip_windows.len() >= self.rate_config.max_tracked_ips && !ip_windows.contains_key(&ip)
+            {
+                warn!(
+                    "Too many IP addresses being tracked, falling back to global rate limiting for {}",
+                    ip
+                );
                 // Fall through to global rate limiting
             } else {
                 let window = ip_windows.entry(ip).or_insert_with(RateLimitWindow::new);
 
-                let (requests, _was_reset) = window.check_and_increment(self.rate_config.window_duration);
+                let (requests, _was_reset) =
+                    window.check_and_increment(self.rate_config.window_duration);
                 if requests > self.rate_config.max_requests {
                     // Log rate limit exceeded event
                     events::rate_limit_exceeded(Some(ip), "per-ip", requests);
 
-                    return Err(RateLimitError::RateLimitExceeded(
-                        format!("Per-IP rate limit exceeded for {}: {} requests per {} seconds",
-                            ip,
-                            self.rate_config.max_requests,
-                            self.rate_config.window_duration.as_secs())
-                    ));
+                    return Err(RateLimitError::RateLimitExceeded(format!(
+                        "Per-IP rate limit exceeded for {}: {} requests per {} seconds",
+                        ip,
+                        self.rate_config.max_requests,
+                        self.rate_config.window_duration.as_secs()
+                    )));
                 }
 
                 // Per-IP limit passed, no need to check global limit
@@ -509,16 +548,17 @@ impl RateLimiter {
         // Check global rate limit (only if per-IP limiting is disabled or IP tracking is full)
         {
             let global_window = self.global_window.read();
-            let (requests, _was_reset) = global_window.check_and_increment(self.rate_config.window_duration);
+            let (requests, _was_reset) =
+                global_window.check_and_increment(self.rate_config.window_duration);
             if requests > self.rate_config.max_requests {
                 // Log rate limit exceeded event
                 events::rate_limit_exceeded(client_ip, "global", requests);
 
-                return Err(RateLimitError::RateLimitExceeded(
-                    format!("Global rate limit exceeded: {} requests per {} seconds",
-                        self.rate_config.max_requests,
-                        self.rate_config.window_duration.as_secs())
-                ));
+                return Err(RateLimitError::RateLimitExceeded(format!(
+                    "Global rate limit exceeded: {} requests per {} seconds",
+                    self.rate_config.max_requests,
+                    self.rate_config.window_duration.as_secs()
+                )));
             }
         }
 
@@ -537,12 +577,16 @@ impl RateLimiter {
 
         if current_nanos.saturating_sub(last_cleanup_nanos) >= cleanup_interval_nanos {
             // Try to atomically update cleanup time
-            if self.last_cleanup_nanos.compare_exchange_weak(
-                last_cleanup_nanos,
-                current_nanos,
-                Ordering::Release,
-                Ordering::Relaxed
-            ).is_ok() {
+            if self
+                .last_cleanup_nanos
+                .compare_exchange_weak(
+                    last_cleanup_nanos,
+                    current_nanos,
+                    Ordering::Release,
+                    Ordering::Relaxed,
+                )
+                .is_ok()
+            {
                 // Successfully claimed cleanup duty
                 let window_expiry_nanos = (self.rate_config.window_duration * 2).as_nanos() as u64;
 
@@ -554,7 +598,10 @@ impl RateLimiter {
 
                 let remaining_ips = ip_windows.len();
                 if remaining_ips > 0 {
-                    debug!("Rate limiter cleanup: {} IP windows remaining", remaining_ips);
+                    debug!(
+                        "Rate limiter cleanup: {} IP windows remaining",
+                        remaining_ips
+                    );
                 }
             }
         }
@@ -603,10 +650,14 @@ impl RateLimiter {
 
         self.circuit_state.packed_state.store(
             CircuitBreakerState::pack_state(CircuitState::Closed, 0, 0),
-            Ordering::Release
+            Ordering::Release,
         );
-        self.circuit_state.last_failure_time_nanos.store(0, Ordering::Release);
-        self.circuit_state.next_attempt_time_nanos.store(0, Ordering::Release);
+        self.circuit_state
+            .last_failure_time_nanos
+            .store(0, Ordering::Release);
+        self.circuit_state
+            .next_attempt_time_nanos
+            .store(0, Ordering::Release);
 
         // Reset cleanup time
         self.last_cleanup_nanos.store(now_nanos, Ordering::Release);
@@ -681,11 +732,18 @@ mod tests {
 
         // Should allow up to max_requests
         for i in 1..=5 {
-            assert!(limiter.check_request(None).is_ok(), "Request {} should be allowed", i);
+            assert!(
+                limiter.check_request(None).is_ok(),
+                "Request {} should be allowed",
+                i
+            );
         }
 
         // Should reject the next request
-        assert!(limiter.check_request(None).is_err(), "Request 6 should be rejected");
+        assert!(
+            limiter.check_request(None).is_err(),
+            "Request 6 should be rejected"
+        );
     }
 
     #[test]
@@ -703,13 +761,27 @@ mod tests {
 
         // Should allow up to max_requests per IP
         for i in 1..=3 {
-            assert!(limiter.check_request(Some(ip1)).is_ok(), "IP1 request {} should be allowed", i);
-            assert!(limiter.check_request(Some(ip2)).is_ok(), "IP2 request {} should be allowed", i);
+            assert!(
+                limiter.check_request(Some(ip1)).is_ok(),
+                "IP1 request {} should be allowed",
+                i
+            );
+            assert!(
+                limiter.check_request(Some(ip2)).is_ok(),
+                "IP2 request {} should be allowed",
+                i
+            );
         }
 
         // Should reject the next request from each IP
-        assert!(limiter.check_request(Some(ip1)).is_err(), "IP1 request 4 should be rejected");
-        assert!(limiter.check_request(Some(ip2)).is_err(), "IP2 request 4 should be rejected");
+        assert!(
+            limiter.check_request(Some(ip1)).is_err(),
+            "IP1 request 4 should be rejected"
+        );
+        assert!(
+            limiter.check_request(Some(ip2)).is_err(),
+            "IP2 request 4 should be rejected"
+        );
     }
 
     #[test]

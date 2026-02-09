@@ -1,5 +1,5 @@
-use crate::security::events;
 use crate::PgSqliteError;
+use crate::security::events;
 use sqlparser::ast::{Expr, FunctionArguments, Join, SelectItem, Statement, TableFactor, Value};
 use sqlparser::dialect::PostgreSqlDialect;
 use sqlparser::parser::Parser;
