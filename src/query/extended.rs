@@ -329,6 +329,8 @@ impl ExtendedQueryHandler {
 
         // Normalize SELECT version() to use a stable column alias.
         cleaned_query = crate::translator::VersionSelectTranslator::translate_query(&cleaned_query);
+        cleaned_query =
+            crate::query::executor::rewrite_session_functions(&cleaned_query, session).await;
 
         // Removed verbose debug logging for parsing
 
@@ -1819,6 +1821,7 @@ impl ExtendedQueryHandler {
                 result_formats
             },
             inferred_param_types: inferred_types,
+            row_description_sent: false,
         };
 
         drop(statements);
@@ -1938,6 +1941,8 @@ impl ExtendedQueryHandler {
             crate::translator::SchemaPrefixTranslator::translate_query(&translated_query);
         translated_query =
             crate::translator::VersionSelectTranslator::translate_query(&translated_query);
+        translated_query =
+            crate::query::executor::rewrite_session_functions(&translated_query, session).await;
         if CastTranslator::needs_translation(&translated_query) {
             translated_query = CastTranslator::translate_query(&translated_query, None);
         }
@@ -2395,8 +2400,13 @@ impl ExtendedQueryHandler {
             }
         }
 
-        // Try optimized extended fast path first for parameterized queries
-        if !bound_values.is_empty() && query.contains('$') {
+        // Try optimized extended fast path first for parameterized queries.
+        // RETURNING needs the slower shared protocol path until its execute/describe
+        // behavior is aligned with prepared statement expectations.
+        if !bound_values.is_empty()
+            && query.contains('$')
+            && !ReturningTranslator::has_returning_clause(&query)
+        {
             let query_type = super::extended_fast_path::QueryType::from_query(&query);
 
             // Early check: Skip fast path for SELECT with binary results
@@ -2755,6 +2765,7 @@ impl ExtendedQueryHandler {
 
     pub async fn handle_describe<T>(
         framed: &mut Framed<T, crate::protocol::PostgresCodec>,
+        db: &Arc<DbHandler>,
         session: &Arc<SessionState>,
         typ: u8,
         name: String,
@@ -2795,6 +2806,9 @@ impl ExtendedQueryHandler {
                 || query.contains("pg_index")
                 || query.contains("pg_depend")
                 || query.contains("pg_database")
+                || query.contains("pg_roles")
+                || query.contains("pg_user")
+                || query.contains("pg_settings")
                 || query.contains("information_schema")
                 || query.contains("pg_prepared_statements")
                 || query.contains("pg_prepared_xacts")
@@ -2983,6 +2997,28 @@ impl ExtendedQueryHandler {
                         .await
                         .map_err(PgSqliteError::Io)?;
                 }
+            } else if ReturningTranslator::has_returning_clause(query) {
+                let field_descriptions =
+                    Self::describe_returning_statement(db, session, query).await;
+
+                if !field_descriptions.is_empty() {
+                    drop(statements);
+                    let mut statements_mut = session.prepared_statements.write().await;
+                    if let Some(stmt_mut) = statements_mut.get_mut(&name) {
+                        stmt_mut.field_descriptions = field_descriptions.clone();
+                    }
+                    drop(statements_mut);
+
+                    framed
+                        .send(BackendMessage::RowDescription(field_descriptions))
+                        .await
+                        .map_err(PgSqliteError::Io)?;
+                } else {
+                    framed
+                        .send(BackendMessage::NoData)
+                        .await
+                        .map_err(PgSqliteError::Io)?;
+                }
             } else {
                 info!("Sending NoData in Describe");
                 framed
@@ -3083,6 +3119,7 @@ impl ExtendedQueryHandler {
                 // Update the statement's field_descriptions with the binary format
                 // so we know we've already sent RowDescription with binary format
                 let statement_name = portal.statement_name.clone();
+                let portal_name = name.clone();
                 drop(portals);
                 drop(statements);
                 let mut statements = session.prepared_statements.write().await;
@@ -3090,6 +3127,11 @@ impl ExtendedQueryHandler {
                     stmt.field_descriptions = fields.clone();
                 }
                 drop(statements);
+                let mut portals = session.portals.write().await;
+                if let Some(portal) = portals.get_mut(&portal_name) {
+                    portal.row_description_sent = true;
+                }
+                drop(portals);
 
                 framed
                     .send(BackendMessage::RowDescription(wire_fields))
@@ -4207,6 +4249,26 @@ impl ExtendedQueryHandler {
                 "nspname" | "nspacl" => PgType::Text.to_oid(),
                 _ => PgType::Text.to_oid(),
             }
+        } else if query.contains("pg_roles") {
+            match column_name {
+                "oid" => OID_TYPE,
+                "rolconnlimit" => PgType::Int4.to_oid(),
+                "rolsuper" | "rolinherit" | "rolcreaterole" | "rolcreatedb" | "rolcanlogin"
+                | "rolreplication" | "rolbypassrls" => PgType::Bool.to_oid(),
+                _ => PgType::Text.to_oid(),
+            }
+        } else if query.contains("pg_user") {
+            match column_name {
+                "usesysid" => OID_TYPE,
+                "usecreatedb" | "usesuper" | "userepl" | "usebypassrls" => PgType::Bool.to_oid(),
+                _ => PgType::Text.to_oid(),
+            }
+        } else if query.contains("pg_settings") {
+            match column_name {
+                "sourceline" => PgType::Int4.to_oid(),
+                "pending_restart" => PgType::Bool.to_oid(),
+                _ => PgType::Text.to_oid(),
+            }
         } else if query.contains("pg_index") {
             match column_name {
                 "indexrelid" | "indrelid" => OID_TYPE,
@@ -4595,6 +4657,9 @@ impl ExtendedQueryHandler {
         result_formats: &[i16],
         field_types: &[i32],
     ) -> Result<Vec<Option<Vec<u8>>>, PgSqliteError> {
+        const OID_TYPE: i32 = 26;
+        const XID_TYPE: i32 = 28;
+
         info!(
             "encode_row called with {} fields, {} result_formats, {} field_types",
             row.len(),
@@ -4698,6 +4763,20 @@ impl ExtendedQueryHandler {
                                         Some(buf)
                                     } else {
                                         // If we can't parse it, return as text (fallback)
+                                        Some(bytes.clone())
+                                    }
+                                } else {
+                                    Some(bytes.clone())
+                                }
+                            }
+                            OID_TYPE | XID_TYPE => {
+                                // oid/xid - convert text to 4-byte unsigned binary
+                                if let Ok(s) = String::from_utf8(bytes.clone()) {
+                                    if s.trim().is_empty() {
+                                        None
+                                    } else if let Ok(val) = s.parse::<u32>() {
+                                        Some(val.to_be_bytes().to_vec())
+                                    } else {
                                         Some(bytes.clone())
                                     }
                                 } else {
@@ -6173,8 +6252,15 @@ impl ExtendedQueryHandler {
                 let portal = portals.get(portal_name).unwrap();
                 portal.result_formats.clone()
             };
-            return Self::execute_dml_with_returning(framed, db, session, query, &result_formats)
-                .await;
+            return Self::execute_dml_with_returning(
+                framed,
+                db,
+                session,
+                portal_name,
+                query,
+                &result_formats,
+            )
+            .await;
         }
 
         // Validation is now done in handle_execute before parameter substitution
@@ -6218,7 +6304,7 @@ impl ExtendedQueryHandler {
         let mut fields = Vec::new();
 
         for (i, col_name) in columns.iter().enumerate() {
-            let requested_format = Self::result_format_for_index(result_formats, i);
+            let _requested_format = Self::result_format_for_index(result_formats, i);
 
             // Try to get the actual type from schema
             let type_oid = if returning_clause == "*" || col_name == &col_name.to_lowercase() {
@@ -6260,7 +6346,10 @@ impl ExtendedQueryHandler {
                 25
             };
 
-            let format = Self::normalize_result_format_for_wire(requested_format, type_oid);
+            // RETURNING rows are materialized from SQLite text results, so advertise text format
+            // even when the client requested binary. This keeps direct-column OIDs accurate
+            // without sending mismatched binary payloads.
+            let format = 0;
             fields.push(FieldDescription {
                 name: col_name.clone(),
                 table_oid: 0,
@@ -6273,6 +6362,103 @@ impl ExtendedQueryHandler {
         }
 
         fields
+    }
+
+    async fn describe_returning_statement(
+        db: &Arc<DbHandler>,
+        session: &Arc<SessionState>,
+        query: &str,
+    ) -> Vec<FieldDescription> {
+        let Some((base_query, returning_clause)) =
+            ReturningTranslator::extract_returning_clause(query)
+        else {
+            return Vec::new();
+        };
+
+        let table_name = if query_starts_with_ignore_case(&base_query, "INSERT") {
+            ReturningTranslator::extract_table_from_insert(&base_query)
+        } else if query_starts_with_ignore_case(&base_query, "UPDATE") {
+            ReturningTranslator::extract_table_from_update(&base_query)
+        } else if query_starts_with_ignore_case(&base_query, "DELETE") {
+            ReturningTranslator::extract_table_from_delete(&base_query)
+        } else {
+            None
+        };
+
+        let Some(table_name) = table_name else {
+            return Vec::new();
+        };
+
+        let columns = Self::extract_returning_columns_for_describe(
+            db,
+            session,
+            &table_name,
+            &returning_clause,
+        )
+        .await;
+        if columns.is_empty() {
+            return Vec::new();
+        }
+
+        Self::build_returning_field_descriptions(
+            db,
+            session,
+            &table_name,
+            &columns,
+            &[],
+            &returning_clause,
+        )
+        .await
+    }
+
+    async fn extract_returning_columns_for_describe(
+        db: &Arc<DbHandler>,
+        session: &Arc<SessionState>,
+        table_name: &str,
+        returning_clause: &str,
+    ) -> Vec<String> {
+        if returning_clause.trim() == "*" {
+            let pragma_query = format!("PRAGMA table_info({table_name})");
+            if let Ok(response) = db
+                .query_with_session_cached(
+                    &pragma_query,
+                    &session.id,
+                    Self::get_or_cache_connection(session, db).await.as_ref(),
+                )
+                .await
+            {
+                return response
+                    .rows
+                    .iter()
+                    .filter_map(|row| row.get(1))
+                    .filter_map(|value| value.as_ref())
+                    .filter_map(|bytes| String::from_utf8(bytes.clone()).ok())
+                    .collect();
+            }
+            return Vec::new();
+        }
+
+        returning_clause
+            .split(',')
+            .map(str::trim)
+            .filter(|item| !item.is_empty())
+            .map(|item| {
+                let alias_parts: Vec<&str> = item.split_whitespace().collect();
+                if alias_parts.len() >= 3
+                    && alias_parts[alias_parts.len() - 2].eq_ignore_ascii_case("AS")
+                {
+                    alias_parts[alias_parts.len() - 1]
+                        .trim_matches('"')
+                        .to_string()
+                } else {
+                    item.split('.')
+                        .last()
+                        .unwrap_or(item)
+                        .trim_matches('"')
+                        .to_string()
+                }
+            })
+            .collect()
     }
 
     /// Helper function to convert timestamp columns in RETURNING results
@@ -6326,6 +6512,7 @@ impl ExtendedQueryHandler {
         framed: &mut Framed<T, crate::protocol::PostgresCodec>,
         db: &Arc<DbHandler>,
         session: &Arc<SessionState>,
+        portal_name: &str,
         query: &str,
         result_formats: &[i16],
     ) -> Result<(), PgSqliteError>
@@ -6336,6 +6523,13 @@ impl ExtendedQueryHandler {
             .ok_or_else(|| {
             PgSqliteError::Protocol("Failed to parse RETURNING clause".to_string())
         })?;
+        let send_row_desc = {
+            let portals = session.portals.read().await;
+            let portal = portals.get(portal_name).unwrap();
+            let statements = session.prepared_statements.read().await;
+            let stmt = statements.get(&portal.statement_name).unwrap();
+            !portal.row_description_sent && stmt.field_descriptions.is_empty()
+        };
 
         if query_starts_with_ignore_case(&base_query, "INSERT") {
             // For INSERT, execute the insert and then query by last_insert_rowid
@@ -6415,11 +6609,18 @@ impl ExtendedQueryHandler {
                 &returning_clause,
             )
             .await;
+            let field_types: Vec<i32> = fields.iter().map(|field| field.type_oid).collect();
 
-            framed
-                .send(BackendMessage::RowDescription(fields))
-                .await
-                .map_err(PgSqliteError::Io)?;
+            if send_row_desc {
+                framed
+                    .send(BackendMessage::RowDescription(fields))
+                    .await
+                    .map_err(PgSqliteError::Io)?;
+                let mut portals = session.portals.write().await;
+                if let Some(portal) = portals.get_mut(portal_name) {
+                    portal.row_description_sent = true;
+                }
+            }
 
             // Convert timestamps and send data rows
             let converted_rows = Self::convert_returning_timestamps(
@@ -6432,8 +6633,9 @@ impl ExtendedQueryHandler {
             .await?;
 
             for row in converted_rows {
+                let encoded_row = Self::encode_row(&row, result_formats, &field_types)?;
                 framed
-                    .send(BackendMessage::DataRow(row))
+                    .send(BackendMessage::DataRow(encoded_row))
                     .await
                     .map_err(PgSqliteError::Io)?;
             }
@@ -6493,11 +6695,18 @@ impl ExtendedQueryHandler {
                     &returning_clause,
                 )
                 .await;
+                let field_types: Vec<i32> = fields.iter().map(|field| field.type_oid).collect();
 
-                framed
-                    .send(BackendMessage::RowDescription(fields))
-                    .await
-                    .map_err(PgSqliteError::Io)?;
+                if send_row_desc {
+                    framed
+                        .send(BackendMessage::RowDescription(fields))
+                        .await
+                        .map_err(PgSqliteError::Io)?;
+                    let mut portals = session.portals.write().await;
+                    if let Some(portal) = portals.get_mut(portal_name) {
+                        portal.row_description_sent = true;
+                    }
+                }
 
                 // Convert timestamps and send data rows
                 let converted_rows = Self::convert_returning_timestamps(
@@ -6510,8 +6719,9 @@ impl ExtendedQueryHandler {
                 .await?;
 
                 for row in converted_rows {
+                    let encoded_row = Self::encode_row(&row, result_formats, &field_types)?;
                     framed
-                        .send(BackendMessage::DataRow(row))
+                        .send(BackendMessage::DataRow(encoded_row))
                         .await
                         .map_err(PgSqliteError::Io)?;
                 }
@@ -6565,11 +6775,18 @@ impl ExtendedQueryHandler {
                 &returning_clause,
             )
             .await;
+            let field_types: Vec<i32> = fields.iter().map(|field| field.type_oid).collect();
 
-            framed
-                .send(BackendMessage::RowDescription(fields))
-                .await
-                .map_err(PgSqliteError::Io)?;
+            if send_row_desc {
+                framed
+                    .send(BackendMessage::RowDescription(fields))
+                    .await
+                    .map_err(PgSqliteError::Io)?;
+                let mut portals = session.portals.write().await;
+                if let Some(portal) = portals.get_mut(portal_name) {
+                    portal.row_description_sent = true;
+                }
+            }
 
             // Convert timestamps in captured rows (skip rowid column)
             let rows_without_rowid: Vec<Vec<Option<Vec<u8>>>> = captured_rows
@@ -6589,8 +6806,9 @@ impl ExtendedQueryHandler {
 
             // Send converted rows
             for row in converted_rows {
+                let encoded_row = Self::encode_row(&row, result_formats, &field_types)?;
                 framed
-                    .send(BackendMessage::DataRow(row))
+                    .send(BackendMessage::DataRow(encoded_row))
                     .await
                     .map_err(PgSqliteError::Io)?;
             }
@@ -6975,6 +7193,10 @@ impl ExtendedQueryHandler {
     {
         if query_starts_with_ignore_case(query, "BEGIN") {
             db.begin_with_session(&session.id).await?;
+            session.clear_local_parameters().await;
+            session
+                .set_transaction_status(crate::protocol::TransactionStatus::InTransaction)
+                .await;
             framed
                 .send(BackendMessage::CommandComplete {
                     tag: "BEGIN".to_string(),
@@ -6983,6 +7205,10 @@ impl ExtendedQueryHandler {
                 .map_err(PgSqliteError::Io)?;
         } else if query_starts_with_ignore_case(query, "COMMIT") {
             db.commit_with_session(&session.id).await?;
+            session.clear_local_parameters().await;
+            session
+                .set_transaction_status(crate::protocol::TransactionStatus::Idle)
+                .await;
             framed
                 .send(BackendMessage::CommandComplete {
                     tag: "COMMIT".to_string(),
@@ -6991,6 +7217,10 @@ impl ExtendedQueryHandler {
                 .map_err(PgSqliteError::Io)?;
         } else if query_starts_with_ignore_case(query, "ROLLBACK") {
             db.rollback_with_session(&session.id).await?;
+            session.clear_local_parameters().await;
+            session
+                .set_transaction_status(crate::protocol::TransactionStatus::Idle)
+                .await;
             framed
                 .send(BackendMessage::CommandComplete {
                     tag: "ROLLBACK".to_string(),

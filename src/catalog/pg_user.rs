@@ -1,16 +1,20 @@
 use super::where_evaluator::WhereEvaluator;
 use crate::PgSqliteError;
+use crate::session::SessionState;
 use crate::session::db_handler::{DbHandler, DbResponse};
-use sqlparser::ast::{Expr, Select, SelectItem};
+use sqlparser::ast::{Expr, FunctionArg, FunctionArgExpr, Select, SelectItem};
 use std::collections::HashMap;
+use std::sync::Arc;
 use tracing::debug;
+use uuid::Uuid;
 
 pub struct PgUserHandler;
 
 impl PgUserHandler {
     pub async fn handle_query(
         select: &Select,
-        _db: &DbHandler,
+        db: &DbHandler,
+        session: Option<&Arc<SessionState>>,
     ) -> Result<DbResponse, PgSqliteError> {
         debug!("Handling pg_user query");
 
@@ -30,8 +34,7 @@ impl PgUserHandler {
         // Determine which columns to return
         let selected_columns = Self::get_selected_columns(&select.projection, &all_columns);
 
-        // Build default users (since SQLite doesn't have user management)
-        let users = Self::get_default_users();
+        let users = Self::load_users(db, session).await?;
 
         // Apply WHERE clause filtering if present
         let filtered_users = if let Some(where_clause) = &select.selection {
@@ -39,6 +42,14 @@ impl PgUserHandler {
         } else {
             users
         };
+
+        if let Some(count_column) = Self::count_projection_name(&select.projection) {
+            return Ok(DbResponse {
+                columns: vec![count_column],
+                rows: vec![vec![Some(filtered_users.len().to_string().into_bytes())]],
+                rows_affected: 1,
+            });
+        }
 
         // Build response
         let mut rows = Vec::new();
@@ -95,6 +106,104 @@ impl PgUserHandler {
         selected
     }
 
+    async fn load_users(
+        db: &DbHandler,
+        session: Option<&Arc<SessionState>>,
+    ) -> Result<Vec<HashMap<String, Vec<u8>>>, PgSqliteError> {
+        if let Some(session) = session {
+            return db
+                .with_session_connection(&session.id, |conn| {
+                    let exists: i64 = conn.query_row(
+                        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = '__pgsqlite_roles'",
+                        [],
+                        |row| row.get(0),
+                    )?;
+                    if exists == 0 {
+                        return Ok(Self::get_default_users());
+                    }
+
+                    Self::read_users_from_connection(conn)
+                })
+                .await;
+        }
+
+        let temp_session = Uuid::new_v4();
+        db.create_session_connection(temp_session).await?;
+
+        let result = db
+            .with_session_connection(&temp_session, |conn| {
+                let exists: i64 = conn.query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = '__pgsqlite_roles'",
+                    [],
+                    |row| row.get(0),
+                )?;
+                if exists == 0 {
+                    return Ok(Self::get_default_users());
+                }
+
+                Self::read_users_from_connection(conn)
+            })
+            .await;
+
+        db.remove_session_connection(&temp_session);
+        result
+    }
+
+    fn read_users_from_connection(
+        conn: &rusqlite::Connection,
+    ) -> Result<Vec<HashMap<String, Vec<u8>>>, rusqlite::Error> {
+        let mut stmt = conn.prepare(
+            "SELECT rolname, oid, rolcreatedb, rolsuper, rolreplication, rolbypassrls, \
+             rolpassword, rolvaliduntil, rolconfig \
+             FROM __pgsqlite_roles WHERE rolcanlogin = 't' ORDER BY oid",
+        )?;
+        let mut rows = stmt.query([])?;
+        let mut users = Vec::new();
+
+        while let Some(row) = rows.next()? {
+            let mut user = HashMap::new();
+            user.insert("usename".to_string(), row.get::<_, String>(0)?.into_bytes());
+            user.insert(
+                "usesysid".to_string(),
+                row.get::<_, i64>(1)?.to_string().into_bytes(),
+            );
+            user.insert(
+                "usecreatedb".to_string(),
+                row.get::<_, String>(2)?.into_bytes(),
+            );
+            user.insert(
+                "usesuper".to_string(),
+                row.get::<_, String>(3)?.into_bytes(),
+            );
+            user.insert("userepl".to_string(), row.get::<_, String>(4)?.into_bytes());
+            user.insert(
+                "usebypassrls".to_string(),
+                row.get::<_, String>(5)?.into_bytes(),
+            );
+            user.insert(
+                "passwd".to_string(),
+                row.get::<_, Option<String>>(6)?
+                    .unwrap_or_default()
+                    .into_bytes(),
+            );
+            user.insert(
+                "valuntil".to_string(),
+                row.get::<_, Option<String>>(7)?
+                    .unwrap_or_default()
+                    .into_bytes(),
+            );
+            user.insert(
+                "useconfig".to_string(),
+                row.get::<_, Option<String>>(8)?
+                    .unwrap_or_default()
+                    .into_bytes(),
+            );
+            users.push(user);
+        }
+
+        Ok(users)
+    }
+
     fn get_default_users() -> Vec<HashMap<String, Vec<u8>>> {
         let mut users = Vec::new();
 
@@ -125,6 +234,41 @@ impl PgUserHandler {
         users.push(current_user);
 
         users
+    }
+
+    fn count_projection_name(projection: &[SelectItem]) -> Option<String> {
+        for item in projection {
+            match item {
+                SelectItem::UnnamedExpr(expr) if Self::is_count_star_expr(expr) => {
+                    return Some("count".to_string());
+                }
+                SelectItem::ExprWithAlias { expr, alias } if Self::is_count_star_expr(expr) => {
+                    return Some(alias.value.clone());
+                }
+                _ => {}
+            }
+        }
+
+        None
+    }
+
+    fn is_count_star(function: &sqlparser::ast::Function) -> bool {
+        if !function.name.to_string().eq_ignore_ascii_case("count") {
+            return false;
+        }
+        let args = match &function.args {
+            sqlparser::ast::FunctionArguments::List(list) => &list.args,
+            _ => return false,
+        };
+        args.len() == 1 && matches!(&args[0], FunctionArg::Unnamed(FunctionArgExpr::Wildcard))
+    }
+
+    fn is_count_star_expr(expr: &Expr) -> bool {
+        match expr {
+            Expr::Function(function) => Self::is_count_star(function),
+            Expr::Cast { expr, .. } => Self::is_count_star_expr(expr),
+            _ => false,
+        }
     }
 
     fn apply_where_filter(

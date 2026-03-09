@@ -24,6 +24,7 @@ pub struct SessionState {
     pub database: String,
     pub user: String,
     pub parameters: RwLock<HashMap<String, String>>,
+    pub local_parameters: RwLock<HashMap<String, String>>,
     pub prepared_statements: RwLock<HashMap<String, PreparedStatement>>,
     pub prepared_statement_meta: RwLock<HashMap<String, PreparedStatementMeta>>,
     pub portals: RwLock<HashMap<String, Portal>>,
@@ -61,6 +62,7 @@ pub struct Portal {
     pub param_formats: Vec<i16>,
     pub result_formats: Vec<i16>,
     pub inferred_param_types: Option<Vec<i32>>, // Types inferred from actual values
+    pub row_description_sent: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -72,23 +74,7 @@ pub struct PortalMeta {
 
 impl SessionState {
     pub fn new(database: String, user: String) -> Self {
-        let mut parameters = HashMap::new();
-        parameters.insert("server_version".to_string(), "16.0 (pgsqlite)".to_string());
-        parameters.insert("server_encoding".to_string(), "UTF8".to_string());
-        parameters.insert("client_encoding".to_string(), "UTF8".to_string());
-        parameters.insert("DateStyle".to_string(), "ISO, MDY".to_string());
-        parameters.insert("TimeZone".to_string(), "UTC".to_string());
-        parameters.insert("IntervalStyle".to_string(), "postgres".to_string());
-        parameters.insert("integer_datetimes".to_string(), "on".to_string());
-        parameters.insert("SEARCH_PATH".to_string(), "public".to_string());
-        parameters.insert(
-            "DEFAULT_TRANSACTION_ISOLATION".to_string(),
-            "read committed".to_string(),
-        );
-        parameters.insert(
-            "TRANSACTION_ISOLATION".to_string(),
-            "read committed".to_string(),
-        );
+        let parameters = default_parameters();
 
         // Increment active session count
         ACTIVE_SESSION_COUNT.fetch_add(1, Ordering::Relaxed);
@@ -98,6 +84,7 @@ impl SessionState {
             database,
             user,
             parameters: RwLock::new(parameters),
+            local_parameters: RwLock::new(HashMap::new()),
             prepared_statements: RwLock::new(HashMap::new()),
             prepared_statement_meta: RwLock::new(HashMap::new()),
             portals: RwLock::new(HashMap::new()),
@@ -178,6 +165,169 @@ impl SessionState {
     /// Get the cached connection if available
     pub fn get_cached_connection(&self) -> Option<Arc<ParkingMutex<Connection>>> {
         self.cached_connection.lock().clone()
+    }
+
+    pub fn canonical_parameter_name(name: &str) -> String {
+        let normalized = name
+            .trim()
+            .trim_matches('\'')
+            .trim_matches('"')
+            .replace('-', "_")
+            .replace(' ', "_")
+            .to_uppercase();
+
+        match normalized.as_str() {
+            "TRANSACTION_ISOLATION_LEVEL" => "TRANSACTION_ISOLATION".to_string(),
+            "TIME_ZONE" => "TIMEZONE".to_string(),
+            "DATE_STYLE" => "DATESTYLE".to_string(),
+            "INTERVAL_STYLE" => "INTERVALSTYLE".to_string(),
+            other => other.to_string(),
+        }
+    }
+
+    pub fn parameter_default(name: &str) -> Option<&'static str> {
+        match Self::canonical_parameter_name(name).as_str() {
+            "SERVER_VERSION" => Some("16.0"),
+            "SERVER_VERSION_NUM" => Some("160000"),
+            "SERVER_ENCODING" => Some("UTF8"),
+            "CLIENT_ENCODING" => Some("UTF8"),
+            "DATESTYLE" => Some("ISO, MDY"),
+            "TIMEZONE" => Some("UTC"),
+            "TIMEZONE_ABBREVIATIONS" => Some("Default"),
+            "INTERVALSTYLE" => Some("postgres"),
+            "INTEGER_DATETIMES" => Some("on"),
+            "SEARCH_PATH" => Some("public"),
+            "DEFAULT_TRANSACTION_ISOLATION" => Some("read committed"),
+            "TRANSACTION_ISOLATION" => Some("read committed"),
+            "DEFAULT_TRANSACTION_READ_ONLY" => Some("off"),
+            "TRANSACTION_READ_ONLY" => Some("off"),
+            "APPLICATION_NAME" => Some(""),
+            "STANDARD_CONFORMING_STRINGS" => Some("on"),
+            "SESSION_AUTHORIZATION" => Some("postgres"),
+            "IS_SUPERUSER" => Some("on"),
+            _ => None,
+        }
+    }
+
+    pub async fn get_parameter(&self, name: &str) -> Option<String> {
+        let canonical = Self::canonical_parameter_name(name);
+
+        {
+            let local = self.local_parameters.read().await;
+            for key in parameter_lookup_keys(&canonical) {
+                if let Some(value) = local.get(&key) {
+                    return Some(value.clone());
+                }
+            }
+        }
+
+        let params = self.parameters.read().await;
+        for key in parameter_lookup_keys(&canonical) {
+            if let Some(value) = params.get(&key) {
+                return Some(value.clone());
+            }
+        }
+
+        Self::parameter_default(&canonical).map(str::to_string)
+    }
+
+    pub async fn set_parameter(&self, name: &str, value: String) {
+        let canonical = Self::canonical_parameter_name(name);
+        let mut params = self.parameters.write().await;
+        remove_parameter_aliases(&mut params, &canonical);
+        params.insert(canonical, value);
+    }
+
+    pub async fn set_local_parameter(&self, name: &str, value: String) {
+        let canonical = Self::canonical_parameter_name(name);
+        let mut params = self.local_parameters.write().await;
+        remove_parameter_aliases(&mut params, &canonical);
+        params.insert(canonical, value);
+    }
+
+    pub async fn reset_parameter(&self, name: &str) {
+        let canonical = Self::canonical_parameter_name(name);
+        {
+            let mut local = self.local_parameters.write().await;
+            remove_parameter_aliases(&mut local, &canonical);
+        }
+
+        let mut params = self.parameters.write().await;
+        remove_parameter_aliases(&mut params, &canonical);
+        if let Some(default) = Self::parameter_default(&canonical) {
+            params.insert(canonical, default.to_string());
+        }
+    }
+
+    pub async fn reset_all_parameters(&self) {
+        *self.parameters.write().await = default_parameters();
+        self.clear_local_parameters().await;
+    }
+
+    pub async fn clear_local_parameters(&self) {
+        self.local_parameters.write().await.clear();
+    }
+}
+
+fn default_parameters() -> HashMap<String, String> {
+    let mut parameters = HashMap::new();
+    parameters.insert("server_version".to_string(), "16.0 (pgsqlite)".to_string());
+    parameters.insert("server_encoding".to_string(), "UTF8".to_string());
+    parameters.insert("client_encoding".to_string(), "UTF8".to_string());
+    parameters.insert("DateStyle".to_string(), "ISO, MDY".to_string());
+    parameters.insert("TimeZone".to_string(), "UTC".to_string());
+    parameters.insert("IntervalStyle".to_string(), "postgres".to_string());
+    parameters.insert("integer_datetimes".to_string(), "on".to_string());
+    parameters.insert("SEARCH_PATH".to_string(), "public".to_string());
+    parameters.insert(
+        "DEFAULT_TRANSACTION_ISOLATION".to_string(),
+        "read committed".to_string(),
+    );
+    parameters.insert(
+        "TRANSACTION_ISOLATION".to_string(),
+        "read committed".to_string(),
+    );
+    parameters.insert(
+        "DEFAULT_TRANSACTION_READ_ONLY".to_string(),
+        "off".to_string(),
+    );
+    parameters.insert("TRANSACTION_READ_ONLY".to_string(), "off".to_string());
+    parameters.insert("application_name".to_string(), "".to_string());
+    parameters.insert("standard_conforming_strings".to_string(), "on".to_string());
+    parameters
+}
+
+fn parameter_lookup_keys(canonical: &str) -> Vec<String> {
+    let mut keys = vec![canonical.to_string()];
+    match canonical {
+        "SERVER_VERSION" => keys.push("server_version".to_string()),
+        "SERVER_VERSION_NUM" => keys.push("server_version_num".to_string()),
+        "SERVER_ENCODING" => keys.push("server_encoding".to_string()),
+        "CLIENT_ENCODING" => keys.push("client_encoding".to_string()),
+        "DATESTYLE" => {
+            keys.push("DateStyle".to_string());
+            keys.push("datestyle".to_string());
+        }
+        "TIMEZONE" => {
+            keys.push("TimeZone".to_string());
+            keys.push("timezone".to_string());
+        }
+        "INTERVALSTYLE" => {
+            keys.push("IntervalStyle".to_string());
+            keys.push("intervalstyle".to_string());
+        }
+        "INTEGER_DATETIMES" => keys.push("integer_datetimes".to_string()),
+        "SEARCH_PATH" => keys.push("search_path".to_string()),
+        "APPLICATION_NAME" => keys.push("application_name".to_string()),
+        "STANDARD_CONFORMING_STRINGS" => keys.push("standard_conforming_strings".to_string()),
+        _ => {}
+    }
+    keys
+}
+
+fn remove_parameter_aliases(map: &mut HashMap<String, String>, canonical: &str) {
+    for key in parameter_lookup_keys(canonical) {
+        map.remove(&key);
     }
 }
 

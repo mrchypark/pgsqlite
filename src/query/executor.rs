@@ -68,24 +68,42 @@ pub fn invalidate_all_schema_cache() {
     debug!("Invalidated all schema cache");
 }
 
-async fn rewrite_session_functions(query: &str, session: &Arc<SessionState>) -> String {
-    let search_path = {
-        let params = session.parameters.read().await;
-        params
-            .get("SEARCH_PATH")
-            .cloned()
-            .unwrap_or_else(|| "public".to_string())
-    };
+pub(crate) async fn rewrite_session_functions(query: &str, session: &Arc<SessionState>) -> String {
+    let search_path = session
+        .get_parameter("search_path")
+        .await
+        .unwrap_or_else(|| "public".to_string());
 
     let current_database = session.database.clone();
 
-    let timezone = {
-        let params = session.parameters.read().await;
-        params
-            .get("TIMEZONE")
-            .cloned()
-            .unwrap_or_else(|| "UTC".to_string())
-    };
+    let timezone = session
+        .get_parameter("timezone")
+        .await
+        .unwrap_or_else(|| "UTC".to_string());
+    let client_encoding = session
+        .get_parameter("client_encoding")
+        .await
+        .unwrap_or_else(|| "UTF8".to_string());
+    let datestyle = session
+        .get_parameter("datestyle")
+        .await
+        .unwrap_or_else(|| "ISO, MDY".to_string());
+    let transaction_isolation = session
+        .get_parameter("transaction_isolation")
+        .await
+        .unwrap_or_else(|| "read committed".to_string());
+    let default_transaction_isolation = session
+        .get_parameter("default_transaction_isolation")
+        .await
+        .unwrap_or_else(|| "read committed".to_string());
+    let transaction_read_only = session
+        .get_parameter("transaction_read_only")
+        .await
+        .unwrap_or_else(|| "off".to_string());
+    let default_transaction_read_only = session
+        .get_parameter("default_transaction_read_only")
+        .await
+        .unwrap_or_else(|| "off".to_string());
 
     let mut schemas: Vec<String> = search_path
         .split(',')
@@ -174,8 +192,12 @@ async fn rewrite_session_functions(query: &str, session: &Arc<SessionState>) -> 
                 "server_version" => Some("16.0".to_string()),
                 "server_version_num" => Some("160000".to_string()),
                 "standard_conforming_strings" => Some("on".to_string()),
-                "client_encoding" => Some("UTF8".to_string()),
-                "datestyle" => Some("ISO, MDY".to_string()),
+                "client_encoding" => Some(client_encoding.clone()),
+                "datestyle" => Some(datestyle.clone()),
+                "transaction_isolation" => Some(transaction_isolation.clone()),
+                "default_transaction_isolation" => Some(default_transaction_isolation.clone()),
+                "transaction_read_only" => Some(transaction_read_only.clone()),
+                "default_transaction_read_only" => Some(default_transaction_read_only.clone()),
                 _ => None,
             };
 
@@ -902,9 +924,16 @@ where
         let upper = param_name.trim().to_uppercase();
         let value = param_value.to_string();
 
+        if caps
+            .get(3)
+            .map(|m| m.as_str())
+            .unwrap_or("false")
+            .eq_ignore_ascii_case("true")
+            && session.in_transaction().await
         {
-            let mut params = session.parameters.write().await;
-            params.insert(upper, value.clone());
+            session.set_local_parameter(&upper, value.clone()).await;
+        } else {
+            session.set_parameter(&upper, value.clone()).await;
         }
 
         let field = FieldDescription {
@@ -1595,13 +1624,10 @@ pub(crate) async fn expand_user_sql_functions(
         return Ok(query.to_string());
     }
 
-    let search_path = {
-        let params = session.parameters.read().await;
-        params
-            .get("SEARCH_PATH")
-            .cloned()
-            .unwrap_or_else(|| "public".to_string())
-    };
+    let search_path = session
+        .get_parameter("search_path")
+        .await
+        .unwrap_or_else(|| "public".to_string());
     let mut search_schemas: Vec<String> = search_path
         .split(',')
         .map(|s| s.trim().trim_matches('\'').trim_matches('"').to_string())
@@ -4928,6 +4954,7 @@ impl QueryExecutor {
                     tracing::debug!("Executing BEGIN command");
                     db.begin_with_session(&session.id).await?;
                     tracing::debug!("BEGIN executed successfully");
+                    session.clear_local_parameters().await;
                     // Update transaction status to InTransaction
                     *session.transaction_status.write().await = TransactionStatus::InTransaction;
                     tracing::debug!("Transaction status updated to InTransaction");
@@ -4950,6 +4977,7 @@ impl QueryExecutor {
                 db.commit_with_session(&session.id).await?;
                 tracing::debug!("COMMIT executed successfully");
 
+                session.clear_local_parameters().await;
                 // Update transaction status to Idle
                 *session.transaction_status.write().await = TransactionStatus::Idle;
                 tracing::debug!("Transaction status updated to Idle");
@@ -4966,6 +4994,7 @@ impl QueryExecutor {
                     .await
                     .map_err(|e| PgSqliteError::Protocol(e.to_string()))?;
 
+                session.clear_local_parameters().await;
                 // Update transaction status to Idle (regardless of previous state)
                 *session.transaction_status.write().await = TransactionStatus::Idle;
                 framed

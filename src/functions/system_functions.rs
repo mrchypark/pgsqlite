@@ -102,6 +102,11 @@ pub fn register_system_functions(conn: &Connection) -> Result<()> {
                 "search_path" => "public".to_string(),
                 "client_encoding" => "UTF8".to_string(),
                 "datestyle" => "ISO, MDY".to_string(),
+                "transaction_isolation" => "read committed".to_string(),
+                "default_transaction_isolation" => "read committed".to_string(),
+                "transaction_read_only" => "off".to_string(),
+                "default_transaction_read_only" => "off".to_string(),
+                "application_name" => "".to_string(),
 
                 _ => {
                     return Err(rusqlite::Error::UserFunctionError(
@@ -143,6 +148,11 @@ pub fn register_system_functions(conn: &Connection) -> Result<()> {
                 "search_path" => Some("public".to_string()),
                 "client_encoding" => Some("UTF8".to_string()),
                 "datestyle" => Some("ISO, MDY".to_string()),
+                "transaction_isolation" => Some("read committed".to_string()),
+                "default_transaction_isolation" => Some("read committed".to_string()),
+                "transaction_read_only" => Some("off".to_string()),
+                "default_transaction_read_only" => Some("off".to_string()),
+                "application_name" => Some("".to_string()),
                 _ => None,
             };
 
