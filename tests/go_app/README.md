@@ -1,10 +1,10 @@
 # Go + GORM Application for pgsqlite Testing
 
-This is a comprehensive Go application using GORM to test pgsqlite compatibility with Go applications that use PostgreSQL-specific features.
+This is a Go application using GORM for smoke-testing pgsqlite against representative PostgreSQL-oriented GORM paths.
 
 ## Features
 
-This Go application demonstrates full PostgreSQL compatibility with the following features:
+This Go application exercises GORM features that pgsqlite currently covers in smoke tests:
 
 ### GORM + PostgreSQL Features Implemented
 - **Auto-incrementing ID columns** - GORM's default ID behavior
@@ -100,4 +100,4 @@ This application tests all major GORM features that work with PostgreSQL:
 - ✅ Raw SQL with PostgreSQL operators
 - ✅ Database introspection and schema management
 
-This ensures pgsqlite provides complete GORM compatibility for production Go applications.
+This smoke suite helps catch GORM regressions, but it is not a production-grade compatibility guarantee.

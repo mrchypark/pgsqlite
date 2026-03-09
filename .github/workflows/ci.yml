@@ -54,3 +54,29 @@ jobs:
       run: ./tests/runner/run_ssl_tests.sh --mode file-ssl
     - name: Run integration tests - File DB without SSL
       run: ./tests/runner/run_ssl_tests.sh --mode file-no-ssl
+
+  compat-targeted:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - name: Setup Rust
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        toolchain: 'stable'
+    - name: Setup Rust cache
+      uses: Swatinem/rust-cache@v2
+      with:
+        key: "v1-compat-targeted"
+        cache-directories: |
+          ~/.cargo/registry/index/
+          ~/.cargo/registry/cache/
+          ~/.cargo/git/db/
+          target/
+    - name: Setup Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+    - name: Run targeted psycopg3 and SQLAlchemy compatibility smoke
+      run: |
+        chmod +x tests/python/run_targeted_compat_checks.sh
+        ./tests/python/run_targeted_compat_checks.sh
