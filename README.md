@@ -16,7 +16,7 @@
 - **🌿 Feature Branch Deployments**: Each branch gets its own database. Just copy the SQLite file - no complex database provisioning.
 - **🤖 AI Agent Development**: Multiple agents can work on isolated sandbox environments with zero setup. Clone the database instantly.
 - **💻 Local Development**: Use your favorite PostgreSQL tools (psql, pgAdmin, DataGrip) with lightweight SQLite storage.
-- **🔧 Migration Path**: Prototype with SQLite, seamlessly move to PostgreSQL later without changing application code.
+- **🔧 Migration Path**: Prototype against SQLite-backed pgsqlite, then move to PostgreSQL later with minimal application changes on tested paths.
 
 ## Quick Start
 
@@ -130,7 +130,7 @@ const client = new Client({
 })
 ```
 
-**Any PostgreSQL-compatible ORM:** Works with SQLAlchemy, Django ORM, ActiveRecord, Prisma, etc.
+**PostgreSQL-compatible ORMs on tested paths:** strongest coverage is SQLAlchemy plus targeted Rails/ActiveRecord and GORM smoke tests.
 
 ## Configuration
 
@@ -166,7 +166,7 @@ For all configuration options, see the [Configuration Reference](docs/configurat
 ### PostgreSQL Compatibility
 
 - ✅ **Wire Protocol**: Full PostgreSQL v3 protocol implementation
-- ✅ **Clients**: Works with psql, pgAdmin, DBeaver, and all PostgreSQL drivers
+- ✅ **Clients**: Tested with `psql 16.x`, `tokio-postgres`, `psycopg2/3`, pgAdmin, and DBeaver
 - ✅ **SQL Syntax**: Most PostgreSQL queries work without modification
 - ✅ **Data Types**: 40+ PostgreSQL types including SERIAL, JSON, UUID, arrays (stored as JSON)
 - ✅ **Transactions**: Full ACID compliance via SQLite
@@ -182,13 +182,13 @@ For all configuration options, see the [Configuration Reference](docs/configurat
 - **JSON Support**: Extensive `JSON`/`JSONB` support with operators (`->`, `->>`, `@>`, `<@`, `#>`, `#>>`, `?`, `?|`, `?&`) and common functions (e.g., `json_agg`, `json_object_agg`, `row_to_json`, `json_populate_record`, `json_to_record`, `jsonb_insert`, `jsonb_delete`, `jsonb_pretty`)
 - **Full-Text Search**: FTS compatibility layer backed by SQLite FTS5: `tsvector`/`tsquery` types, `@@` operator, and query functions (`to_tsvector()`, `to_tsquery()`, `plainto_tsquery()`, `phraseto_tsquery()`, `websearch_to_tsquery()`)
 - **ENUM Types**: `CREATE TYPE status AS ENUM ('active', 'pending', 'archived')`
-- **RETURNING Clauses**: `INSERT INTO users (email) VALUES ('test@example.com') RETURNING id`
+- **RETURNING Clauses**: supported for common DML flows; direct-column OID/format fidelity in all extended-protocol paths is still being tightened
 - **CTEs**: `WITH` and `WITH RECURSIVE` queries
 - **Generated Columns**: `SERIAL` and `BIGSERIAL` auto-increment columns
 - **VARCHAR/CHAR Constraints**: Length validation for `VARCHAR(n)` and `CHAR(n)` with proper padding
 - **NUMERIC/DECIMAL Constraints**: Precision and scale validation for `NUMERIC(p,s)` and `DECIMAL(p,s)`
 - **CREATE INDEX with Operator Classes**: Support for PostgreSQL operator classes like `varchar_pattern_ops`, `text_pattern_ops` (mapped to SQLite `COLLATE BINARY` for pattern matching optimization)
-- **psql Compatibility**: Improved system catalog compatibility for psql introspection (see `tests/sql/meta/` for known-working meta-command coverage; describing a specific table is still a work in progress)
+- **psql Compatibility**: targeted support for `\d`, `\dt`, `\di`, `\dv`, `\dT`, and `\df` query shapes from `psql 16.x`; describing a specific table is still a work in progress
 
 ### Security Features
 
@@ -212,9 +212,20 @@ For all configuration options, see the [Configuration Reference](docs/configurat
 
 For detailed compatibility information, see [Type Mapping Documentation](docs/type-mapping-prd.md).
 
+## Compatibility Matrix
+
+| Client / Tool | Tested Version | Current Coverage | Known Gaps |
+|---------------|----------------|------------------|------------|
+| `psql` | `16.x` | targeted meta-command introspection (`\d`, `\dt`, `\di`, `\dv`, `\dT`, `\df`) and common session/catalog queries | full `\d <table>` parity still incomplete |
+| `tokio-postgres` | current CI/regression target | roles/catalog/settings round-trip, prepared `SELECT` direct-column describe | some `RETURNING` extended-protocol wire-format paths still need tightening |
+| `psycopg2` / `psycopg3` | smoke + targeted tests | common CRUD, protocol handshake, catalog/settings probes, direct-column metadata checks | binary/text fidelity still varies on some advanced types |
+| SQLAlchemy | targeted app test set + CI smoke | engine/text DDL-DML smoke, core CRUD/transaction coverage from targeted app tests | full reflection parity is not guaranteed; see `docs/SQLALCHEMY_COMPATIBILITY_REPORT.md` |
+| Rails / ActiveRecord | smoke scripts | schema creation plus core CRUD/operator paths exercised by scripts in `tests/rails_app/` | not a production-grade compatibility guarantee |
+| GORM | smoke scripts | auto-migration and representative CRUD/query paths exercised by scripts in `tests/go_app/` | not a production-grade compatibility guarantee |
+
 ## Performance Considerations
 
-pgsqlite acts as a translation layer between PostgreSQL protocol and SQLite, providing full PostgreSQL compatibility with measurable overhead:
+pgsqlite acts as a translation layer between PostgreSQL protocol and SQLite, providing broad PostgreSQL wire-compatibility on tested paths with measurable overhead:
 
 ### Real-World Performance (2025-09-20)
 
@@ -228,12 +239,12 @@ pgsqlite acts as a translation layer between PostgreSQL protocol and SQLite, pro
 **Overhead vs Pure SQLite** (200 operations):
 - **Pure SQLite**: 44.4ms (0.22ms per operation) - Maximum speed
 - **pgsqlite**: ~16 seconds (~80ms per operation) - **~360x overhead**
-- **Trade-off**: Raw performance vs full PostgreSQL compatibility + ORM support
+- **Trade-off**: Raw performance vs PostgreSQL wire compatibility + ORM/tooling support on tested paths
 
 ### When pgsqlite is the Right Choice
 - **Web applications**: 80ms database operations feel instant to users
-- **ORM integration**: Django, SQLAlchemy, Rails, Ecto work seamlessly
-- **Development/testing**: Full PostgreSQL feature compatibility
+- **ORM integration**: strongest coverage today is SQLAlchemy plus Rails/GORM smoke scenarios
+- **Development/testing**: broad PostgreSQL-like behavior on the tested feature set
 - **API endpoints**: Database time typically 10-20% of total request time
 
 ### Performance Optimizations
@@ -245,7 +256,7 @@ pgsqlite acts as a translation layer between PostgreSQL protocol and SQLite, pro
 - **Connection architecture**: Connection-per-session provides excellent isolation
 - **Ultra-fast path**: Optimized execution for simple SELECT queries
 
-For applications requiring microsecond-level performance, use pure SQLite. For PostgreSQL compatibility with acceptable overhead, pgsqlite is ideal.
+For applications requiring microsecond-level performance, use pure SQLite. For PostgreSQL-compatible tooling behavior on the tested matrix above, pgsqlite is a pragmatic option.
 
 ### Connection Pooling
 

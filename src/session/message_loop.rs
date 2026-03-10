@@ -168,7 +168,8 @@ where
             Ok(true)
         }
         FrontendMessage::Describe { typ, name } => {
-            if let Err(e) = ExtendedQueryHandler::handle_describe(framed, session, typ, name).await
+            if let Err(e) =
+                ExtendedQueryHandler::handle_describe(framed, db_handler, session, typ, name).await
             {
                 send_extended_error(
                     framed,

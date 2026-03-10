@@ -267,6 +267,7 @@ mod tests {
             param_formats: vec![],
             result_formats: vec![],
             inferred_param_types: None,
+            row_description_sent: false,
         };
 
         // Create portal
@@ -298,6 +299,7 @@ mod tests {
                 param_formats: vec![],
                 result_formats: vec![],
                 inferred_param_types: None,
+                row_description_sent: false,
             };
 
             manager
@@ -328,6 +330,7 @@ mod tests {
                 param_formats: vec![],
                 result_formats: vec![],
                 inferred_param_types: None,
+                row_description_sent: false,
             };
 
             manager

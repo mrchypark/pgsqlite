@@ -1,16 +1,20 @@
 use super::where_evaluator::WhereEvaluator;
 use crate::PgSqliteError;
+use crate::session::SessionState;
 use crate::session::db_handler::{DbHandler, DbResponse};
-use sqlparser::ast::{Expr, Select, SelectItem};
+use sqlparser::ast::{Expr, FunctionArg, FunctionArgExpr, Select, SelectItem};
 use std::collections::HashMap;
+use std::sync::Arc;
 use tracing::debug;
+use uuid::Uuid;
 
 pub struct PgRolesHandler;
 
 impl PgRolesHandler {
     pub async fn handle_query(
         select: &Select,
-        _db: &DbHandler,
+        db: &DbHandler,
+        session: Option<&Arc<SessionState>>,
     ) -> Result<DbResponse, PgSqliteError> {
         debug!("Handling pg_roles query");
 
@@ -34,8 +38,7 @@ impl PgRolesHandler {
         // Determine which columns to return
         let selected_columns = Self::get_selected_columns(&select.projection, &all_columns);
 
-        // Build default roles (since SQLite doesn't have role management)
-        let roles = Self::get_default_roles();
+        let roles = Self::load_roles(db, session).await?;
 
         // Apply WHERE clause filtering if present
         let filtered_roles = if let Some(where_clause) = &select.selection {
@@ -43,6 +46,14 @@ impl PgRolesHandler {
         } else {
             roles
         };
+
+        if let Some(count_column) = Self::count_projection_name(&select.projection) {
+            return Ok(DbResponse {
+                columns: vec![count_column],
+                rows: vec![vec![Some(filtered_roles.len().to_string().into_bytes())]],
+                rows_affected: 1,
+            });
+        }
 
         // Build response
         let mut rows = Vec::new();
@@ -97,6 +108,110 @@ impl PgRolesHandler {
         }
 
         selected
+    }
+
+    async fn load_roles(
+        db: &DbHandler,
+        session: Option<&Arc<SessionState>>,
+    ) -> Result<Vec<HashMap<String, Vec<u8>>>, PgSqliteError> {
+        let read_roles = |conn: &rusqlite::Connection| {
+            let exists: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = '__pgsqlite_roles'",
+                [],
+                |row| row.get(0),
+            )?;
+            if exists == 0 {
+                return Ok(Self::get_default_roles());
+            }
+
+            Self::read_roles_from_connection(conn)
+        };
+
+        if let Some(session) = session {
+            return db.with_session_connection(&session.id, read_roles).await;
+        }
+
+        let temp_session = Uuid::new_v4();
+        db.create_session_connection(temp_session).await?;
+
+        let result = db.with_session_connection(&temp_session, read_roles).await;
+
+        db.remove_session_connection(&temp_session);
+        result
+    }
+
+    fn read_roles_from_connection(
+        conn: &rusqlite::Connection,
+    ) -> Result<Vec<HashMap<String, Vec<u8>>>, rusqlite::Error> {
+        let mut stmt = conn.prepare(
+            "SELECT oid, rolname, rolsuper, rolinherit, rolcreaterole, rolcreatedb, \
+             rolcanlogin, rolreplication, rolconnlimit, rolpassword, rolvaliduntil, \
+             rolbypassrls, rolconfig FROM __pgsqlite_roles ORDER BY oid",
+        )?;
+        let mut rows = stmt.query([])?;
+        let mut roles = Vec::new();
+
+        while let Some(row) = rows.next()? {
+            let mut role = HashMap::new();
+            role.insert(
+                "oid".to_string(),
+                row.get::<_, i64>(0)?.to_string().into_bytes(),
+            );
+            role.insert("rolname".to_string(), row.get::<_, String>(1)?.into_bytes());
+            role.insert(
+                "rolsuper".to_string(),
+                row.get::<_, String>(2)?.into_bytes(),
+            );
+            role.insert(
+                "rolinherit".to_string(),
+                row.get::<_, String>(3)?.into_bytes(),
+            );
+            role.insert(
+                "rolcreaterole".to_string(),
+                row.get::<_, String>(4)?.into_bytes(),
+            );
+            role.insert(
+                "rolcreatedb".to_string(),
+                row.get::<_, String>(5)?.into_bytes(),
+            );
+            role.insert(
+                "rolcanlogin".to_string(),
+                row.get::<_, String>(6)?.into_bytes(),
+            );
+            role.insert(
+                "rolreplication".to_string(),
+                row.get::<_, String>(7)?.into_bytes(),
+            );
+            role.insert(
+                "rolconnlimit".to_string(),
+                row.get::<_, i64>(8)?.to_string().into_bytes(),
+            );
+            role.insert(
+                "rolpassword".to_string(),
+                row.get::<_, Option<String>>(9)?
+                    .unwrap_or_default()
+                    .into_bytes(),
+            );
+            role.insert(
+                "rolvaliduntil".to_string(),
+                row.get::<_, Option<String>>(10)?
+                    .unwrap_or_default()
+                    .into_bytes(),
+            );
+            role.insert(
+                "rolbypassrls".to_string(),
+                row.get::<_, String>(11)?.into_bytes(),
+            );
+            role.insert(
+                "rolconfig".to_string(),
+                row.get::<_, Option<String>>(12)?
+                    .unwrap_or_default()
+                    .into_bytes(),
+            );
+            roles.push(role);
+        }
+
+        Ok(roles)
     }
 
     fn get_default_roles() -> Vec<HashMap<String, Vec<u8>>> {
@@ -154,6 +269,41 @@ impl PgRolesHandler {
         roles.push(current_user_role);
 
         roles
+    }
+
+    fn count_projection_name(projection: &[SelectItem]) -> Option<String> {
+        for item in projection {
+            match item {
+                SelectItem::UnnamedExpr(expr) if Self::is_count_star_expr(expr) => {
+                    return Some("count".to_string());
+                }
+                SelectItem::ExprWithAlias { expr, alias } if Self::is_count_star_expr(expr) => {
+                    return Some(alias.value.clone());
+                }
+                _ => {}
+            }
+        }
+
+        None
+    }
+
+    fn is_count_star(function: &sqlparser::ast::Function) -> bool {
+        if !function.name.to_string().eq_ignore_ascii_case("count") {
+            return false;
+        }
+        let args = match &function.args {
+            sqlparser::ast::FunctionArguments::List(list) => &list.args,
+            _ => return false,
+        };
+        args.len() == 1 && matches!(&args[0], FunctionArg::Unnamed(FunctionArgExpr::Wildcard))
+    }
+
+    fn is_count_star_expr(expr: &Expr) -> bool {
+        match expr {
+            Expr::Function(function) => Self::is_count_star(function),
+            Expr::Cast { expr, .. } => Self::is_count_star_expr(expr),
+            _ => false,
+        }
     }
 
     fn apply_where_filter(

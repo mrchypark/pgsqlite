@@ -9,10 +9,21 @@ use tokio_util::codec::Framed;
 use tracing::{debug, info};
 
 static SET_TIMEZONE_PATTERN: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"(?i)^\s*SET\s+TIME\s*ZONE\s+(.+)$").unwrap());
+    Lazy::new(|| Regex::new(r"(?i)^\s*SET\s+(LOCAL\s+)?TIME\s*ZONE\s+(.+?)\s*;?\s*$").unwrap());
 
-static SET_PARAMETER_PATTERN: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"(?i)^\s*SET\s+(\w+)\s*(?:TO|=)\s*(.+)$").unwrap());
+static SET_TRANSACTION_PATTERN: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r"(?i)^\s*SET\s+TRANSACTION\s+(?:(ISOLATION\s+LEVEL)\s+([A-Za-z\s]+)|(READ\s+ONLY|READ\s+WRITE))\s*;?\s*$",
+    )
+    .unwrap()
+});
+
+static SET_PARAMETER_PATTERN: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"(?i)^\s*SET\s+(LOCAL\s+)?(\w+)\s*(?:TO|=)\s*(.+?)\s*;?\s*$").unwrap()
+});
+
+static RESET_PARAMETER_PATTERN: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"(?i)^\s*RESET\s+(.+?)\s*;?\s*$").unwrap());
 
 static SHOW_PARAMETER_PATTERN: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"(?i)^\s*SHOW\s+(.+?)\s*$").unwrap());
@@ -66,9 +77,41 @@ impl SetHandler {
 
         // Handle SET TIME ZONE
         if let Some(caps) = SET_TIMEZONE_PATTERN.captures(trimmed) {
-            let timezone = caps[1].trim().trim_matches('\'').trim_matches('"');
+            let is_local = caps.get(1).is_some();
+            let timezone = caps[2].trim().trim_matches('\'').trim_matches('"');
             info!("Setting timezone to: {}", timezone);
-            Self::set_timezone(session, timezone).await?;
+            Self::set_timezone(session, timezone, is_local).await?;
+
+            framed
+                .send(BackendMessage::CommandComplete {
+                    tag: "SET".to_string(),
+                })
+                .await
+                .map_err(PgSqliteError::Io)?;
+
+            return Ok(());
+        }
+
+        if let Some(caps) = SET_TRANSACTION_PATTERN.captures(trimmed) {
+            if caps.get(1).is_some() {
+                let isolation_level = caps[2].trim().to_lowercase();
+                Self::set_parameter_value(session, "TRANSACTION_ISOLATION", isolation_level, true)
+                    .await;
+            } else {
+                let read_mode = caps[3].trim().to_lowercase();
+                let read_only = if read_mode == "read only" {
+                    "on"
+                } else {
+                    "off"
+                };
+                Self::set_parameter_value(
+                    session,
+                    "TRANSACTION_READ_ONLY",
+                    read_only.to_string(),
+                    true,
+                )
+                .await;
+            }
 
             framed
                 .send(BackendMessage::CommandComplete {
@@ -82,29 +125,17 @@ impl SetHandler {
 
         // Handle general SET parameter
         if let Some(caps) = SET_PARAMETER_PATTERN.captures(trimmed) {
-            let param_name = caps[1].to_uppercase();
-            let param_value = caps[2].trim().trim_matches('\'').trim_matches('"');
+            let is_local = caps.get(1).is_some();
+            let param_name = SessionState::canonical_parameter_name(&caps[2]);
+            let param_value = caps[3].trim().trim_matches('\'').trim_matches('"');
 
-            if param_name == "SEARCH_PATH" {
-                let normalized = normalize_search_path(param_value, session).await;
-                let mut params = session.parameters.write().await;
-                params.insert(param_name.clone(), normalized);
-                drop(params);
+            let normalized_value = if param_name == "SEARCH_PATH" {
+                normalize_search_path(param_value, session).await
+            } else {
+                param_value.to_string()
+            };
 
-                framed
-                    .send(BackendMessage::CommandComplete {
-                        tag: "SET".to_string(),
-                    })
-                    .await
-                    .map_err(PgSqliteError::Io)?;
-
-                return Ok(());
-            }
-
-            // Update session parameter
-            let mut params = session.parameters.write().await;
-            params.insert(param_name.clone(), param_value.to_string());
-            drop(params);
+            Self::set_parameter_value(session, &param_name, normalized_value, is_local).await;
 
             framed
                 .send(BackendMessage::CommandComplete {
@@ -116,38 +147,40 @@ impl SetHandler {
             return Ok(());
         }
 
+        if let Some(caps) = RESET_PARAMETER_PATTERN.captures(trimmed) {
+            let name = caps[1].trim();
+            if name.eq_ignore_ascii_case("ALL") {
+                session.reset_all_parameters().await;
+            } else {
+                session.reset_parameter(name).await;
+            }
+
+            framed
+                .send(BackendMessage::CommandComplete {
+                    tag: "RESET".to_string(),
+                })
+                .await
+                .map_err(PgSqliteError::Io)?;
+
+            return Ok(());
+        }
+
         // Handle SHOW parameter
         if let Some(caps) = SHOW_PARAMETER_PATTERN.captures(trimmed) {
-            let param_name = caps[1].to_uppercase();
+            let requested_name = caps[1].trim();
+            let param_name = SessionState::canonical_parameter_name(requested_name);
             info!("SHOW parameter: {}", param_name);
 
-            // Handle special PostgreSQL SHOW commands
-            let value = match param_name.as_str() {
-                "TRANSACTION ISOLATION LEVEL" => "read committed".to_string(),
-                "DEFAULT_TRANSACTION_ISOLATION" => "read committed".to_string(),
-                "TRANSACTION_ISOLATION" => "read committed".to_string(),
-                "SERVER_VERSION" => "16.0".to_string(),
-                "SERVER_VERSION_NUM" => "160000".to_string(),
-                "IS_SUPERUSER" => "on".to_string(),
-                "SESSION_AUTHORIZATION" => "postgres".to_string(),
-                "STANDARD_CONFORMING_STRINGS" => "on".to_string(),
-                "CLIENT_ENCODING" => "UTF8".to_string(),
-                "SERVER_ENCODING" => "UTF8".to_string(),
-                _ => {
-                    // Fall back to session parameters
-                    let params = session.parameters.read().await;
-                    params
-                        .get(&param_name)
-                        .map(|v| v.to_string())
-                        .unwrap_or_else(|| "unset".to_string())
-                }
-            };
+            let value = session
+                .get_parameter(&param_name)
+                .await
+                .unwrap_or_else(|| "unset".to_string());
             info!("Parameter {} = {}", param_name, value);
 
             // Send row description only if not in extended protocol with pre-described statement
             if !skip_row_description {
                 let field = crate::protocol::FieldDescription {
-                    name: param_name.to_lowercase(),
+                    name: requested_name.to_lowercase(),
                     table_oid: 0,
                     column_id: 1,
                     type_oid: crate::types::PgType::Text.to_oid(),
@@ -188,6 +221,7 @@ impl SetHandler {
     async fn set_timezone(
         session: &Arc<SessionState>,
         timezone: &str,
+        is_local: bool,
     ) -> Result<(), PgSqliteError> {
         // Validate timezone (basic validation)
         let valid_timezone = match timezone.to_uppercase().as_str() {
@@ -208,8 +242,7 @@ impl SetHandler {
             }
         };
 
-        let mut params = session.parameters.write().await;
-        params.insert("TIMEZONE".to_string(), valid_timezone.to_string());
+        Self::set_parameter_value(session, "TIMEZONE", valid_timezone.to_string(), is_local).await;
 
         Ok(())
     }
@@ -218,6 +251,19 @@ impl SetHandler {
     fn is_valid_offset(offset: &str) -> bool {
         let offset_pattern = Regex::new(r"^[+-]\d{2}:\d{2}$").unwrap();
         offset_pattern.is_match(offset)
+    }
+
+    async fn set_parameter_value(
+        session: &Arc<SessionState>,
+        name: &str,
+        value: String,
+        is_local: bool,
+    ) {
+        if is_local && session.in_transaction().await {
+            session.set_local_parameter(name, value).await;
+        } else {
+            session.set_parameter(name, value).await;
+        }
     }
 }
 

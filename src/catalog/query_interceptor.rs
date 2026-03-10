@@ -47,6 +47,167 @@ pub const INFORMATION_SCHEMA_TABLES: &[&str] = &[
 pub struct CatalogInterceptor;
 
 impl CatalogInterceptor {
+    async fn handle_psql_d_table_relation_lookup(
+        query: &str,
+        db: &DbHandler,
+    ) -> Option<Result<DbResponse, PgSqliteError>> {
+        let lower = query.to_lowercase();
+        let has_pg_class_from =
+            lower.contains("from pg_catalog.pg_class c") || lower.contains("from pg_class c");
+        let has_pg_namespace_join = lower.contains("left join pg_catalog.pg_namespace n")
+            || lower.contains("left join pg_namespace n");
+        if !has_pg_class_from || !has_pg_namespace_join || !lower.contains("order by 2, 3") {
+            return None;
+        }
+
+        let quoted_re = regex::Regex::new(r"'([^']+)'").ok()?;
+        let relname = quoted_re
+            .captures_iter(query)
+            .filter_map(|captures| captures.get(1).map(|m| m.as_str().to_string()))
+            .find_map(|raw| {
+                let trimmed = raw
+                    .trim_start_matches("^(")
+                    .trim_end_matches(")$")
+                    .trim()
+                    .to_string();
+                if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("public") {
+                    None
+                } else {
+                    Some(trimmed)
+                }
+            })?;
+
+        let sqlite_response = match db
+            .query(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '__pgsqlite_%'",
+            )
+            .await
+        {
+            Ok(response) => response,
+            Err(err) => return Some(Err(PgSqliteError::Sqlite(err))),
+        };
+
+        let mut rows = Vec::new();
+        for row in sqlite_response.rows {
+            let Some(Some(name_bytes)) = row.first() else {
+                continue;
+            };
+            let name = String::from_utf8_lossy(name_bytes);
+            if name == relname {
+                rows.push(vec![
+                    Some(
+                        crate::utils::generate_oid(&relname)
+                            .to_string()
+                            .into_bytes(),
+                    ),
+                    Some(b"public".to_vec()),
+                    Some(relname.as_bytes().to_vec()),
+                ]);
+            }
+        }
+
+        Some(Ok(DbResponse {
+            columns: vec![
+                "oid".to_string(),
+                "nspname".to_string(),
+                "relname".to_string(),
+            ],
+            rows_affected: rows.len(),
+            rows,
+        }))
+    }
+
+    async fn handle_psql_d_table_relation_details(
+        query: &str,
+        db: &DbHandler,
+    ) -> Option<Result<DbResponse, PgSqliteError>> {
+        let lower = query.to_lowercase();
+        if !lower.contains("select c.relchecks, c.relkind, c.relhasindex")
+            || !(lower.contains("left join pg_catalog.pg_class tc")
+                || lower.contains("left join pg_class tc"))
+            || !(lower.contains("left join pg_catalog.pg_am am")
+                || lower.contains("left join pg_am am"))
+            || !lower.contains("where c.oid =")
+        {
+            return None;
+        }
+
+        let oid_re = regex::Regex::new(r"where\s+c\.oid\s*=\s*'?([0-9]+)'?").ok()?;
+        let captures = oid_re.captures(&lower)?;
+        let rel_oid: u32 = captures.get(1)?.as_str().parse().ok()?;
+
+        let sqlite_response = match db
+            .query(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '__pgsqlite_%'",
+            )
+            .await
+        {
+            Ok(response) => response,
+            Err(err) => return Some(Err(PgSqliteError::Sqlite(err))),
+        };
+
+        let mut rows = Vec::new();
+        for row in sqlite_response.rows {
+            let Some(Some(name_bytes)) = row.first() else {
+                continue;
+            };
+            let table_name = String::from_utf8_lossy(name_bytes).to_string();
+            if crate::utils::generate_oid(&table_name) != rel_oid {
+                continue;
+            }
+
+            let index_query = format!("PRAGMA index_list({table_name})");
+            let relhasindex = match db.query(&index_query).await {
+                Ok(indexes) => !indexes.rows.is_empty(),
+                Err(err) => return Some(Err(PgSqliteError::Sqlite(err))),
+            };
+
+            rows.push(vec![
+                Some(b"0".to_vec()), // relchecks
+                Some(b"r".to_vec()), // relkind
+                Some(if relhasindex {
+                    b"t".to_vec()
+                } else {
+                    b"f".to_vec()
+                }), // relhasindex
+                Some(b"f".to_vec()), // relhasrules
+                Some(b"f".to_vec()), // relhastriggers
+                Some(b"f".to_vec()), // relrowsecurity
+                Some(b"f".to_vec()), // relforcerowsecurity
+                Some(b"f".to_vec()), // relhasoids alias
+                Some(b"f".to_vec()), // relispartition
+                Some(Vec::new()),    // empty literal
+                Some(b"0".to_vec()), // reltablespace
+                Some(Vec::new()),    // reloftype text case
+                Some(b"p".to_vec()), // relpersistence
+                Some(b"d".to_vec()), // relreplident
+                None,                // amname
+            ]);
+        }
+
+        Some(Ok(DbResponse {
+            columns: vec![
+                "relchecks".to_string(),
+                "relkind".to_string(),
+                "relhasindex".to_string(),
+                "relhasrules".to_string(),
+                "relhastriggers".to_string(),
+                "relrowsecurity".to_string(),
+                "relforcerowsecurity".to_string(),
+                "relhasoids".to_string(),
+                "relispartition".to_string(),
+                "?column?".to_string(),
+                "reltablespace".to_string(),
+                "?column?".to_string(),
+                "relpersistence".to_string(),
+                "relreplident".to_string(),
+                "amname".to_string(),
+            ],
+            rows_affected: rows.len(),
+            rows,
+        }))
+    }
+
     fn contains_catalog_reference_lower(lower_query: &str) -> bool {
         lower_query.contains("pg_catalog")
             || lower_query.contains("pg_type")
@@ -145,6 +306,14 @@ impl CatalogInterceptor {
         if query.contains("LIMIT 0") {
             // Skipping LIMIT 0 catalog query
             return None;
+        }
+
+        if let Some(response) = Self::handle_psql_d_table_relation_lookup(query, &db).await {
+            return Some(response);
+        }
+
+        if let Some(response) = Self::handle_psql_d_table_relation_details(query, &db).await {
+            return Some(response);
         }
 
         // First, remove schema prefixes from catalog tables
@@ -752,7 +921,7 @@ impl CatalogInterceptor {
             // Handle pg_roles queries
             if table_name.contains("pg_roles") || table_name.contains("pg_catalog.pg_roles") {
                 info!("Routing to PgRolesHandler for table: {}", table_name);
-                return match PgRolesHandler::handle_query(select, &db).await {
+                return match PgRolesHandler::handle_query(select, &db, session.as_ref()).await {
                     Ok(response) => {
                         debug!("PgRolesHandler returned {} rows", response.rows.len());
                         Some(Ok(response))
@@ -766,7 +935,7 @@ impl CatalogInterceptor {
             // Handle pg_user queries
             if table_name.contains("pg_user") || table_name.contains("pg_catalog.pg_user") {
                 info!("Routing to PgUserHandler for table: {}", table_name);
-                return match PgUserHandler::handle_query(select, &db).await {
+                return match PgUserHandler::handle_query(select, &db, session.as_ref()).await {
                     Ok(response) => {
                         debug!("PgUserHandler returned {} rows", response.rows.len());
                         Some(Ok(response))
@@ -818,7 +987,7 @@ impl CatalogInterceptor {
 
             if table_name.contains("pg_settings") || table_name.contains("pg_catalog.pg_settings") {
                 info!("Routing to PgSettingsHandler for table: {}", table_name);
-                return match PgSettingsHandler::handle_query(select) {
+                return match PgSettingsHandler::handle_query(select, session.as_ref()).await {
                     Ok(response) => {
                         debug!("PgSettingsHandler returned {} rows", response.rows.len());
                         Some(Ok(response))

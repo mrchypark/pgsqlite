@@ -1,14 +1,19 @@
 use super::where_evaluator::WhereEvaluator;
 use crate::PgSqliteError;
+use crate::session::SessionState;
 use crate::session::db_handler::DbResponse;
-use sqlparser::ast::{Expr, Select, SelectItem};
+use sqlparser::ast::{Expr, FunctionArg, FunctionArgExpr, Select, SelectItem};
 use std::collections::HashMap;
+use std::sync::Arc;
 use tracing::debug;
 
 pub struct PgSettingsHandler;
 
 impl PgSettingsHandler {
-    pub fn handle_query(select: &Select) -> Result<DbResponse, PgSqliteError> {
+    pub async fn handle_query(
+        select: &Select,
+        session: Option<&Arc<SessionState>>,
+    ) -> Result<DbResponse, PgSqliteError> {
         debug!("Handling pg_settings query");
 
         let all_columns = vec![
@@ -33,13 +38,21 @@ impl PgSettingsHandler {
 
         let selected_columns = Self::get_selected_columns(&select.projection, &all_columns);
 
-        let settings = Self::get_all_settings();
+        let settings = Self::get_all_settings(session).await;
 
         let filtered_settings = if let Some(where_clause) = &select.selection {
             Self::apply_where_filter(&settings, where_clause)?
         } else {
             settings
         };
+
+        if let Some(count_column) = Self::count_projection_name(&select.projection) {
+            return Ok(DbResponse {
+                columns: vec![count_column],
+                rows: vec![vec![Some(filtered_settings.len().to_string().into_bytes())]],
+                rows_affected: 1,
+            });
+        }
 
         let mut rows = Vec::new();
         for setting in filtered_settings {
@@ -103,7 +116,9 @@ impl PgSettingsHandler {
         selected
     }
 
-    fn get_all_settings() -> Vec<HashMap<String, Vec<u8>>> {
+    async fn get_all_settings(
+        session: Option<&Arc<SessionState>>,
+    ) -> Vec<HashMap<String, Vec<u8>>> {
         let settings_data: Vec<(&str, &str, &str, &str, &str, &str, &str)> = vec![
             (
                 "server_version",
@@ -476,38 +491,85 @@ impl PgSettingsHandler {
             ),
         ];
 
-        settings_data
-            .into_iter()
-            .map(
-                |(name, setting, unit, category, short_desc, context, vartype)| {
-                    let mut setting_map = HashMap::new();
+        let mut settings = Vec::with_capacity(settings_data.len());
 
-                    setting_map.insert("name".to_string(), name.as_bytes().to_vec());
-                    setting_map.insert("setting".to_string(), setting.as_bytes().to_vec());
-                    if unit.is_empty() {
-                        setting_map.insert("unit".to_string(), b"".to_vec());
-                    } else {
-                        setting_map.insert("unit".to_string(), unit.as_bytes().to_vec());
-                    }
-                    setting_map.insert("category".to_string(), category.as_bytes().to_vec());
-                    setting_map.insert("short_desc".to_string(), short_desc.as_bytes().to_vec());
-                    setting_map.insert("extra_desc".to_string(), b"".to_vec());
-                    setting_map.insert("context".to_string(), context.as_bytes().to_vec());
-                    setting_map.insert("vartype".to_string(), vartype.as_bytes().to_vec());
-                    setting_map.insert("source".to_string(), b"default".to_vec());
-                    setting_map.insert("min_val".to_string(), b"".to_vec());
-                    setting_map.insert("max_val".to_string(), b"".to_vec());
-                    setting_map.insert("enumvals".to_string(), b"".to_vec());
-                    setting_map.insert("boot_val".to_string(), setting.as_bytes().to_vec());
-                    setting_map.insert("reset_val".to_string(), setting.as_bytes().to_vec());
-                    setting_map.insert("sourcefile".to_string(), b"".to_vec());
-                    setting_map.insert("sourceline".to_string(), b"".to_vec());
-                    setting_map.insert("pending_restart".to_string(), b"f".to_vec());
+        for (name, setting, unit, category, short_desc, context, vartype) in settings_data {
+            let effective_setting = if let Some(session) = session {
+                session
+                    .get_parameter(name)
+                    .await
+                    .unwrap_or_else(|| setting.to_string())
+            } else {
+                setting.to_string()
+            };
 
-                    setting_map
-                },
-            )
-            .collect()
+            let source = if effective_setting == setting {
+                "default"
+            } else {
+                "session"
+            };
+
+            let mut setting_map = HashMap::new();
+            setting_map.insert("name".to_string(), name.as_bytes().to_vec());
+            setting_map.insert("setting".to_string(), effective_setting.as_bytes().to_vec());
+            if unit.is_empty() {
+                setting_map.insert("unit".to_string(), b"".to_vec());
+            } else {
+                setting_map.insert("unit".to_string(), unit.as_bytes().to_vec());
+            }
+            setting_map.insert("category".to_string(), category.as_bytes().to_vec());
+            setting_map.insert("short_desc".to_string(), short_desc.as_bytes().to_vec());
+            setting_map.insert("extra_desc".to_string(), b"".to_vec());
+            setting_map.insert("context".to_string(), context.as_bytes().to_vec());
+            setting_map.insert("vartype".to_string(), vartype.as_bytes().to_vec());
+            setting_map.insert("source".to_string(), source.as_bytes().to_vec());
+            setting_map.insert("min_val".to_string(), b"".to_vec());
+            setting_map.insert("max_val".to_string(), b"".to_vec());
+            setting_map.insert("enumvals".to_string(), b"".to_vec());
+            setting_map.insert("boot_val".to_string(), setting.as_bytes().to_vec());
+            setting_map.insert("reset_val".to_string(), setting.as_bytes().to_vec());
+            setting_map.insert("sourcefile".to_string(), b"".to_vec());
+            setting_map.insert("sourceline".to_string(), b"".to_vec());
+            setting_map.insert("pending_restart".to_string(), b"f".to_vec());
+            settings.push(setting_map);
+        }
+
+        settings
+    }
+
+    fn count_projection_name(projection: &[SelectItem]) -> Option<String> {
+        for item in projection {
+            match item {
+                SelectItem::UnnamedExpr(expr) if Self::is_count_star_expr(expr) => {
+                    return Some("count".to_string());
+                }
+                SelectItem::ExprWithAlias { expr, alias } if Self::is_count_star_expr(expr) => {
+                    return Some(alias.value.clone());
+                }
+                _ => {}
+            }
+        }
+
+        None
+    }
+
+    fn is_count_star(function: &sqlparser::ast::Function) -> bool {
+        if !function.name.to_string().eq_ignore_ascii_case("count") {
+            return false;
+        }
+        let args = match &function.args {
+            sqlparser::ast::FunctionArguments::List(list) => &list.args,
+            _ => return false,
+        };
+        args.len() == 1 && matches!(&args[0], FunctionArg::Unnamed(FunctionArgExpr::Wildcard))
+    }
+
+    fn is_count_star_expr(expr: &Expr) -> bool {
+        match expr {
+            Expr::Function(function) => Self::is_count_star(function),
+            Expr::Cast { expr, .. } => Self::is_count_star_expr(expr),
+            _ => false,
+        }
     }
 
     fn apply_where_filter(

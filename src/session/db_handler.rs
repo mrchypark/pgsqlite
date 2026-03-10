@@ -721,7 +721,7 @@ impl DbHandler {
                 && let Some(sqlparser::ast::Statement::Query(query_ast)) = statements.pop()
                 && let Some(select) = query_ast.body.as_select()
             {
-                match PgSettingsHandler::handle_query(select) {
+                match PgSettingsHandler::handle_query(select, None).await {
                     Ok(response) => return Ok(response),
                     Err(_) => {
                         // Fallback to empty response
