@@ -18,9 +18,8 @@ static SET_TRANSACTION_PATTERN: Lazy<Regex> = Lazy::new(|| {
     .unwrap()
 });
 
-static SET_PARAMETER_PATTERN: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"(?i)^\s*SET\s+(LOCAL\s+)?(\w+)\s*(?:TO|=)\s*(.+?)\s*;?\s*$").unwrap()
-});
+static SET_PARAMETER_PATTERN: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"(?i)^\s*SET\s+(LOCAL\s+)?(\w+)\s*(?:TO|=)\s*(.+?)\s*;?\s*$").unwrap());
 
 static RESET_PARAMETER_PATTERN: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"(?i)^\s*RESET\s+(.+?)\s*;?\s*$").unwrap());
@@ -95,15 +94,16 @@ impl SetHandler {
         if let Some(caps) = SET_TRANSACTION_PATTERN.captures(trimmed) {
             if caps.get(1).is_some() {
                 let isolation_level = caps[2].trim().to_lowercase();
-                Self::set_parameter_value(session, "TRANSACTION_ISOLATION", isolation_level, true)
-                    .await;
+                Self::set_parameter_value(
+                    session,
+                    "TRANSACTION_ISOLATION",
+                    isolation_level,
+                    true,
+                )
+                .await;
             } else {
                 let read_mode = caps[3].trim().to_lowercase();
-                let read_only = if read_mode == "read only" {
-                    "on"
-                } else {
-                    "off"
-                };
+                let read_only = if read_mode == "read only" { "on" } else { "off" };
                 Self::set_parameter_value(
                     session,
                     "TRANSACTION_READ_ONLY",

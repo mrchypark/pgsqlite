@@ -116,9 +116,7 @@ impl PgSettingsHandler {
         selected
     }
 
-    async fn get_all_settings(
-        session: Option<&Arc<SessionState>>,
-    ) -> Vec<HashMap<String, Vec<u8>>> {
+    async fn get_all_settings(session: Option<&Arc<SessionState>>) -> Vec<HashMap<String, Vec<u8>>> {
         let settings_data: Vec<(&str, &str, &str, &str, &str, &str, &str)> = vec![
             (
                 "server_version",
@@ -540,10 +538,15 @@ impl PgSettingsHandler {
     fn count_projection_name(projection: &[SelectItem]) -> Option<String> {
         for item in projection {
             match item {
-                SelectItem::UnnamedExpr(expr) if Self::is_count_star_expr(expr) => {
+                SelectItem::UnnamedExpr(expr) if Self::is_count_star_expr(expr) =>
+                {
                     return Some("count".to_string());
                 }
-                SelectItem::ExprWithAlias { expr, alias } if Self::is_count_star_expr(expr) => {
+                SelectItem::ExprWithAlias {
+                    expr,
+                    alias,
+                } if Self::is_count_star_expr(expr) =>
+                {
                     return Some(alias.value.clone());
                 }
                 _ => {}
@@ -561,7 +564,11 @@ impl PgSettingsHandler {
             sqlparser::ast::FunctionArguments::List(list) => &list.args,
             _ => return false,
         };
-        args.len() == 1 && matches!(&args[0], FunctionArg::Unnamed(FunctionArgExpr::Wildcard))
+        args.len() == 1
+            && matches!(
+                &args[0],
+                FunctionArg::Unnamed(FunctionArgExpr::Wildcard)
+            )
     }
 
     fn is_count_star_expr(expr: &Expr) -> bool {

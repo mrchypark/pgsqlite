@@ -110,27 +110,40 @@ impl PgUserHandler {
         db: &DbHandler,
         session: Option<&Arc<SessionState>>,
     ) -> Result<Vec<HashMap<String, Vec<u8>>>, PgSqliteError> {
-        let read_users = |conn: &rusqlite::Connection| {
-            let exists: i64 = conn.query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = '__pgsqlite_roles'",
-                [],
-                |row| row.get(0),
-            )?;
-            if exists == 0 {
-                return Ok(Self::get_default_users());
-            }
-
-            Self::read_users_from_connection(conn)
-        };
-
         if let Some(session) = session {
-            return db.with_session_connection(&session.id, read_users).await;
+            return db
+                .with_session_connection(&session.id, |conn| {
+                    let exists: i64 = conn.query_row(
+                        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = '__pgsqlite_roles'",
+                        [],
+                        |row| row.get(0),
+                    )?;
+                    if exists == 0 {
+                        return Ok(Self::get_default_users());
+                    }
+
+                    Self::read_users_from_connection(conn)
+                })
+                .await;
         }
 
         let temp_session = Uuid::new_v4();
         db.create_session_connection(temp_session).await?;
 
-        let result = db.with_session_connection(&temp_session, read_users).await;
+        let result = db
+            .with_session_connection(&temp_session, |conn| {
+                let exists: i64 = conn.query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = '__pgsqlite_roles'",
+                    [],
+                    |row| row.get(0),
+                )?;
+                if exists == 0 {
+                    return Ok(Self::get_default_users());
+                }
+
+                Self::read_users_from_connection(conn)
+            })
+            .await;
 
         db.remove_session_connection(&temp_session);
         result
@@ -154,36 +167,21 @@ impl PgUserHandler {
                 "usesysid".to_string(),
                 row.get::<_, i64>(1)?.to_string().into_bytes(),
             );
-            user.insert(
-                "usecreatedb".to_string(),
-                row.get::<_, String>(2)?.into_bytes(),
-            );
-            user.insert(
-                "usesuper".to_string(),
-                row.get::<_, String>(3)?.into_bytes(),
-            );
+            user.insert("usecreatedb".to_string(), row.get::<_, String>(2)?.into_bytes());
+            user.insert("usesuper".to_string(), row.get::<_, String>(3)?.into_bytes());
             user.insert("userepl".to_string(), row.get::<_, String>(4)?.into_bytes());
-            user.insert(
-                "usebypassrls".to_string(),
-                row.get::<_, String>(5)?.into_bytes(),
-            );
+            user.insert("usebypassrls".to_string(), row.get::<_, String>(5)?.into_bytes());
             user.insert(
                 "passwd".to_string(),
-                row.get::<_, Option<String>>(6)?
-                    .unwrap_or_default()
-                    .into_bytes(),
+                row.get::<_, Option<String>>(6)?.unwrap_or_default().into_bytes(),
             );
             user.insert(
                 "valuntil".to_string(),
-                row.get::<_, Option<String>>(7)?
-                    .unwrap_or_default()
-                    .into_bytes(),
+                row.get::<_, Option<String>>(7)?.unwrap_or_default().into_bytes(),
             );
             user.insert(
                 "useconfig".to_string(),
-                row.get::<_, Option<String>>(8)?
-                    .unwrap_or_default()
-                    .into_bytes(),
+                row.get::<_, Option<String>>(8)?.unwrap_or_default().into_bytes(),
             );
             users.push(user);
         }
@@ -226,10 +224,15 @@ impl PgUserHandler {
     fn count_projection_name(projection: &[SelectItem]) -> Option<String> {
         for item in projection {
             match item {
-                SelectItem::UnnamedExpr(expr) if Self::is_count_star_expr(expr) => {
+                SelectItem::UnnamedExpr(expr) if Self::is_count_star_expr(expr) =>
+                {
                     return Some("count".to_string());
                 }
-                SelectItem::ExprWithAlias { expr, alias } if Self::is_count_star_expr(expr) => {
+                SelectItem::ExprWithAlias {
+                    expr,
+                    alias,
+                } if Self::is_count_star_expr(expr) =>
+                {
                     return Some(alias.value.clone());
                 }
                 _ => {}
@@ -247,7 +250,11 @@ impl PgUserHandler {
             sqlparser::ast::FunctionArguments::List(list) => &list.args,
             _ => return false,
         };
-        args.len() == 1 && matches!(&args[0], FunctionArg::Unnamed(FunctionArgExpr::Wildcard))
+        args.len() == 1
+            && matches!(
+                &args[0],
+                FunctionArg::Unnamed(FunctionArgExpr::Wildcard)
+            )
     }
 
     fn is_count_star_expr(expr: &Expr) -> bool {

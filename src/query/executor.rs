@@ -195,9 +195,13 @@ pub(crate) async fn rewrite_session_functions(query: &str, session: &Arc<Session
                 "client_encoding" => Some(client_encoding.clone()),
                 "datestyle" => Some(datestyle.clone()),
                 "transaction_isolation" => Some(transaction_isolation.clone()),
-                "default_transaction_isolation" => Some(default_transaction_isolation.clone()),
+                "default_transaction_isolation" => {
+                    Some(default_transaction_isolation.clone())
+                }
                 "transaction_read_only" => Some(transaction_read_only.clone()),
-                "default_transaction_read_only" => Some(default_transaction_read_only.clone()),
+                "default_transaction_read_only" => {
+                    Some(default_transaction_read_only.clone())
+                }
                 _ => None,
             };
 

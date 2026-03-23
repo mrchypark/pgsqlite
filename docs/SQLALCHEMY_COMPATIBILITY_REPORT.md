@@ -1,23 +1,6 @@
 # SQLAlchemy Compatibility Report
 
-This report reflects targeted SQLAlchemy coverage, not blanket PostgreSQL ORM parity.
-
-## Phase 2 Targeted CI Coverage
-
-The current automated compatibility gate is narrower than the full exploratory suite.
-
-- `tests/python/run_targeted_compat_checks.sh` now runs in CI
-- the psycopg3 portion covers:
-  - `SET TRANSACTION ...` plus `SHOW` / `current_setting(...)` / `pg_settings`
-  - `CREATE ROLE` visibility through `pg_roles` and `pg_user`
-  - parameterized direct-column `SELECT` metadata
-  - direct-column `INSERT ... RETURNING` metadata
-- the SQLAlchemy portion currently covers:
-  - engine connection
-  - text-based DDL/DML
-  - simple readback through SQLAlchemy `text(...)`
-
-This CI job does **not** yet claim full SQLAlchemy reflection parity. Reflection remains partial and broader ORM coverage still relies on the larger targeted app suite described below.
+This report reflects a targeted SQLAlchemy compatibility run, not blanket PostgreSQL ORM parity.
 
 ## Test Results with Unified Processor
 
@@ -89,8 +72,6 @@ The unified processor successfully handles:
 
 ## Conclusion
 
-pgsqlite has a useful SQLAlchemy story on tested paths, but the supported scope is still narrower than “full SQLAlchemy compatibility”.
+With 75% of the targeted SQLAlchemy suite passing, pgsqlite demonstrates useful compatibility for real ORM workloads, but not full SQLAlchemy parity. The remaining issues are concentrated in type fidelity and a smaller set of complex query and cascade paths.
 
-- CI now locks a deterministic SQLAlchemy engine/text smoke path plus companion psycopg3 protocol checks.
-- The larger exploratory SQLAlchemy suite is still informative, but it should be read as directional rather than release-gating.
-- Reflection-heavy and complex-query behavior remain partial and should stay documented as such.
+The unified processor's ability to handle both simple and complex queries efficiently makes it well-suited for SQLAlchemy workloads, where queries range from simple CRUD to complex joins and subqueries.

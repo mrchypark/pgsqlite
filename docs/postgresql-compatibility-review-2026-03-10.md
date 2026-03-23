@@ -20,8 +20,8 @@
 - `psql`: `16.x` 기준 query shape / meta command 범위
 - `tokio-postgres`: 회귀 테스트 기준 검증
 - `psycopg2`: 기존 프로젝트 문서/테스트 범위 참고, 이번 턴 직접 재검증은 안 함
-- `psycopg3`: targeted smoke 직접 재검증
-- SQLAlchemy: targeted engine/text smoke 직접 재검증, full reflection 재검증은 안 함
+- `psycopg3`: 기존 프로젝트 문서/테스트 범위 참고, 이번 턴 직접 재검증은 안 함
+- SQLAlchemy: 기존 문서/테스트 범위 참고, 이번 턴 직접 재검증은 안 함
 - Rails: smoke-only
 - GORM: smoke-only
 
@@ -63,8 +63,8 @@
 | Prepared Statements | `tokio-postgres` prepare | Pass | direct-column OID regression 통과 |
 | Session Settings | `SET`/`SHOW`/`current_setting`/`pg_settings` | Pass | 값 일치하도록 통합 |
 | Catalog Introspection | `pg_roles`, `pg_user`, `pg_settings` | Pass | write/read split-brain 제거 |
-| `psql` Meta Commands | targeted query shapes | Partial | `\d <table>` hidden query subset은 고정했지만 full command parity는 아직 미완 |
-| ORM Reflection | SQLAlchemy-sensitive catalog paths | Partial | engine/text smoke는 직접 재검증했지만 full reflection은 아님 |
+| `psql` Meta Commands | targeted query shapes | Partial | `\d <table>` 완전 parity는 아직 미완 |
+| ORM Reflection | SQLAlchemy-sensitive catalog paths | Partial | 이번 턴 직접 재실행 안 함 |
 | CRUD | core paths | Pass | 기존 범위 유지 |
 | Transactions | `SET LOCAL`, `SET TRANSACTION` 수명 | Pass | local override reset 확인 |
 | `RETURNING` | common support | Partial | 일부 extended wire-format gap 남음 |
@@ -271,16 +271,16 @@ Notes:
 - Result: partial confidence only
 
 ### `psycopg3`
-- Connection: Pass
-- Binary/text behavior: targeted direct-column metadata smoke pass
-- Reflection: N/A
-- CRUD: Pass on targeted smoke path
-- Result: strong on targeted smoke paths, broader type coverage still partial
+- Connection: Not re-tested this turn
+- Binary/text behavior: Partial by project history
+- Reflection: Not re-tested this turn
+- CRUD: Not re-tested this turn
+- Result: partial confidence only
 
 ### SQLAlchemy
-- Reflection: partial confidence only
-- CRUD: Pass on engine/text smoke path
-- Transactions: Pass on engine/text smoke path
+- Reflection: partial confidence
+- CRUD: partial confidence
+- Transactions: partial confidence
 - Joins: partial confidence
 - `RETURNING`: known gap remains
 - Result: useful compatibility, not full parity
@@ -355,7 +355,6 @@ Notes:
 ```bash
 cargo test --quiet --test postgres16_compat_regression_test -- --nocapture
 cargo test --quiet --test pg_roles_user_test -- --nocapture
-./tests/python/run_targeted_compat_checks.sh
 ```
 
 ### Key Queries Used
@@ -372,9 +371,6 @@ SELECT COUNT(*) FROM pg_user WHERE usename = 'compat_role';
 ### Test Files / Fixtures
 - `tests/postgres16_compat_regression_test.rs`
 - `tests/pg_roles_user_test.rs`
-- `tests/python/compat_targeted_smoke.py`
-- `tests/python/run_targeted_compat_checks.sh`
-- `tests/sql/meta/psql16_d_table_queries.sql`
 
 ---
 
@@ -388,7 +384,7 @@ SELECT COUNT(*) FROM pg_user WHERE usename = 'compat_role';
 ### Top Risks
 1. extended protocol `RETURNING` wire-format/type fidelity
 2. full `psql \d <table>` parity 미완
-3. SQLAlchemy reflection / psycopg full-suite 재검증 부재
+3. SQLAlchemy / psycopg full-suite 재검증 부재
 
 ### Required Next Steps
 1. `RETURNING` describe/execute/format 경로를 공통화해서 OID/format/payload 일치 보장

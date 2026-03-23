@@ -114,27 +114,40 @@ impl PgRolesHandler {
         db: &DbHandler,
         session: Option<&Arc<SessionState>>,
     ) -> Result<Vec<HashMap<String, Vec<u8>>>, PgSqliteError> {
-        let read_roles = |conn: &rusqlite::Connection| {
-            let exists: i64 = conn.query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = '__pgsqlite_roles'",
-                [],
-                |row| row.get(0),
-            )?;
-            if exists == 0 {
-                return Ok(Self::get_default_roles());
-            }
-
-            Self::read_roles_from_connection(conn)
-        };
-
         if let Some(session) = session {
-            return db.with_session_connection(&session.id, read_roles).await;
+            return db
+                .with_session_connection(&session.id, |conn| {
+                    let exists: i64 = conn.query_row(
+                        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = '__pgsqlite_roles'",
+                        [],
+                        |row| row.get(0),
+                    )?;
+                    if exists == 0 {
+                        return Ok(Self::get_default_roles());
+                    }
+
+                    Self::read_roles_from_connection(conn)
+                })
+                .await;
         }
 
         let temp_session = Uuid::new_v4();
         db.create_session_connection(temp_session).await?;
 
-        let result = db.with_session_connection(&temp_session, read_roles).await;
+        let result = db
+            .with_session_connection(&temp_session, |conn| {
+                let exists: i64 = conn.query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = '__pgsqlite_roles'",
+                    [],
+                    |row| row.get(0),
+                )?;
+                if exists == 0 {
+                    return Ok(Self::get_default_roles());
+                }
+
+                Self::read_roles_from_connection(conn)
+            })
+            .await;
 
         db.remove_session_connection(&temp_session);
         result
@@ -153,60 +166,30 @@ impl PgRolesHandler {
 
         while let Some(row) = rows.next()? {
             let mut role = HashMap::new();
-            role.insert(
-                "oid".to_string(),
-                row.get::<_, i64>(0)?.to_string().into_bytes(),
-            );
+            role.insert("oid".to_string(), row.get::<_, i64>(0)?.to_string().into_bytes());
             role.insert("rolname".to_string(), row.get::<_, String>(1)?.into_bytes());
-            role.insert(
-                "rolsuper".to_string(),
-                row.get::<_, String>(2)?.into_bytes(),
-            );
-            role.insert(
-                "rolinherit".to_string(),
-                row.get::<_, String>(3)?.into_bytes(),
-            );
-            role.insert(
-                "rolcreaterole".to_string(),
-                row.get::<_, String>(4)?.into_bytes(),
-            );
-            role.insert(
-                "rolcreatedb".to_string(),
-                row.get::<_, String>(5)?.into_bytes(),
-            );
-            role.insert(
-                "rolcanlogin".to_string(),
-                row.get::<_, String>(6)?.into_bytes(),
-            );
-            role.insert(
-                "rolreplication".to_string(),
-                row.get::<_, String>(7)?.into_bytes(),
-            );
+            role.insert("rolsuper".to_string(), row.get::<_, String>(2)?.into_bytes());
+            role.insert("rolinherit".to_string(), row.get::<_, String>(3)?.into_bytes());
+            role.insert("rolcreaterole".to_string(), row.get::<_, String>(4)?.into_bytes());
+            role.insert("rolcreatedb".to_string(), row.get::<_, String>(5)?.into_bytes());
+            role.insert("rolcanlogin".to_string(), row.get::<_, String>(6)?.into_bytes());
+            role.insert("rolreplication".to_string(), row.get::<_, String>(7)?.into_bytes());
             role.insert(
                 "rolconnlimit".to_string(),
                 row.get::<_, i64>(8)?.to_string().into_bytes(),
             );
             role.insert(
                 "rolpassword".to_string(),
-                row.get::<_, Option<String>>(9)?
-                    .unwrap_or_default()
-                    .into_bytes(),
+                row.get::<_, Option<String>>(9)?.unwrap_or_default().into_bytes(),
             );
             role.insert(
                 "rolvaliduntil".to_string(),
-                row.get::<_, Option<String>>(10)?
-                    .unwrap_or_default()
-                    .into_bytes(),
+                row.get::<_, Option<String>>(10)?.unwrap_or_default().into_bytes(),
             );
-            role.insert(
-                "rolbypassrls".to_string(),
-                row.get::<_, String>(11)?.into_bytes(),
-            );
+            role.insert("rolbypassrls".to_string(), row.get::<_, String>(11)?.into_bytes());
             role.insert(
                 "rolconfig".to_string(),
-                row.get::<_, Option<String>>(12)?
-                    .unwrap_or_default()
-                    .into_bytes(),
+                row.get::<_, Option<String>>(12)?.unwrap_or_default().into_bytes(),
             );
             roles.push(role);
         }
@@ -274,10 +257,15 @@ impl PgRolesHandler {
     fn count_projection_name(projection: &[SelectItem]) -> Option<String> {
         for item in projection {
             match item {
-                SelectItem::UnnamedExpr(expr) if Self::is_count_star_expr(expr) => {
+                SelectItem::UnnamedExpr(expr) if Self::is_count_star_expr(expr) =>
+                {
                     return Some("count".to_string());
                 }
-                SelectItem::ExprWithAlias { expr, alias } if Self::is_count_star_expr(expr) => {
+                SelectItem::ExprWithAlias {
+                    expr,
+                    alias,
+                } if Self::is_count_star_expr(expr) =>
+                {
                     return Some(alias.value.clone());
                 }
                 _ => {}
@@ -295,7 +283,11 @@ impl PgRolesHandler {
             sqlparser::ast::FunctionArguments::List(list) => &list.args,
             _ => return false,
         };
-        args.len() == 1 && matches!(&args[0], FunctionArg::Unnamed(FunctionArgExpr::Wildcard))
+        args.len() == 1
+            && matches!(
+                &args[0],
+                FunctionArg::Unnamed(FunctionArgExpr::Wildcard)
+            )
     }
 
     fn is_count_star_expr(expr: &Expr) -> bool {

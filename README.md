@@ -218,8 +218,8 @@ For detailed compatibility information, see [Type Mapping Documentation](docs/ty
 |---------------|----------------|------------------|------------|
 | `psql` | `16.x` | targeted meta-command introspection (`\d`, `\dt`, `\di`, `\dv`, `\dT`, `\df`) and common session/catalog queries | full `\d <table>` parity still incomplete |
 | `tokio-postgres` | current CI/regression target | roles/catalog/settings round-trip, prepared `SELECT` direct-column describe | some `RETURNING` extended-protocol wire-format paths still need tightening |
-| `psycopg2` / `psycopg3` | smoke + targeted tests | common CRUD, protocol handshake, catalog/settings probes, direct-column metadata checks | binary/text fidelity still varies on some advanced types |
-| SQLAlchemy | targeted app test set + CI smoke | engine/text DDL-DML smoke, core CRUD/transaction coverage from targeted app tests | full reflection parity is not guaranteed; see `docs/SQLALCHEMY_COMPATIBILITY_REPORT.md` |
+| `psycopg2` / `psycopg3` | smoke + targeted tests | common CRUD, protocol handshake, catalog/settings probes | binary/text fidelity still varies on some advanced types |
+| SQLAlchemy | targeted app test set | core CRUD, joins, transactions, reflection-sensitive catalog paths | not all query shapes pass; see `docs/SQLALCHEMY_COMPATIBILITY_REPORT.md` |
 | Rails / ActiveRecord | smoke scripts | schema creation plus core CRUD/operator paths exercised by scripts in `tests/rails_app/` | not a production-grade compatibility guarantee |
 | GORM | smoke scripts | auto-migration and representative CRUD/query paths exercised by scripts in `tests/go_app/` | not a production-grade compatibility guarantee |
 

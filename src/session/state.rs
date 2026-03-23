@@ -62,7 +62,6 @@ pub struct Portal {
     pub param_formats: Vec<i16>,
     pub result_formats: Vec<i16>,
     pub inferred_param_types: Option<Vec<i32>>, // Types inferred from actual values
-    pub row_description_sent: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -293,7 +292,10 @@ fn default_parameters() -> HashMap<String, String> {
     );
     parameters.insert("TRANSACTION_READ_ONLY".to_string(), "off".to_string());
     parameters.insert("application_name".to_string(), "".to_string());
-    parameters.insert("standard_conforming_strings".to_string(), "on".to_string());
+    parameters.insert(
+        "standard_conforming_strings".to_string(),
+        "on".to_string(),
+    );
     parameters
 }
 

@@ -1821,7 +1821,6 @@ impl ExtendedQueryHandler {
                 result_formats
             },
             inferred_param_types: inferred_types,
-            row_description_sent: false,
         };
 
         drop(statements);
@@ -2400,13 +2399,8 @@ impl ExtendedQueryHandler {
             }
         }
 
-        // Try optimized extended fast path first for parameterized queries.
-        // RETURNING needs the slower shared protocol path until its execute/describe
-        // behavior is aligned with prepared statement expectations.
-        if !bound_values.is_empty()
-            && query.contains('$')
-            && !ReturningTranslator::has_returning_clause(&query)
-        {
+        // Try optimized extended fast path first for parameterized queries
+        if !bound_values.is_empty() && query.contains('$') {
             let query_type = super::extended_fast_path::QueryType::from_query(&query);
 
             // Early check: Skip fast path for SELECT with binary results
@@ -2998,8 +2992,7 @@ impl ExtendedQueryHandler {
                         .map_err(PgSqliteError::Io)?;
                 }
             } else if ReturningTranslator::has_returning_clause(query) {
-                let field_descriptions =
-                    Self::describe_returning_statement(db, session, query).await;
+                let field_descriptions = Self::describe_returning_statement(db, session, query).await;
 
                 if !field_descriptions.is_empty() {
                     drop(statements);
@@ -3099,7 +3092,10 @@ impl ExtendedQueryHandler {
 
                 // Update format fields based on result_formats from the portal
                 for (i, field) in fields.iter_mut().enumerate() {
-                    let requested_format = if portal.result_formats.is_empty() {
+                    let requested_format = if ReturningTranslator::has_returning_clause(&stmt.query)
+                    {
+                        0
+                    } else if portal.result_formats.is_empty() {
                         0 // Default to text
                     } else if portal.result_formats.len() == 1 {
                         portal.result_formats[0] // Single format for all columns
@@ -3119,7 +3115,6 @@ impl ExtendedQueryHandler {
                 // Update the statement's field_descriptions with the binary format
                 // so we know we've already sent RowDescription with binary format
                 let statement_name = portal.statement_name.clone();
-                let portal_name = name.clone();
                 drop(portals);
                 drop(statements);
                 let mut statements = session.prepared_statements.write().await;
@@ -3127,11 +3122,6 @@ impl ExtendedQueryHandler {
                     stmt.field_descriptions = fields.clone();
                 }
                 drop(statements);
-                let mut portals = session.portals.write().await;
-                if let Some(portal) = portals.get_mut(&portal_name) {
-                    portal.row_description_sent = true;
-                }
-                drop(portals);
 
                 framed
                     .send(BackendMessage::RowDescription(wire_fields))
@@ -4249,26 +4239,6 @@ impl ExtendedQueryHandler {
                 "nspname" | "nspacl" => PgType::Text.to_oid(),
                 _ => PgType::Text.to_oid(),
             }
-        } else if query.contains("pg_roles") {
-            match column_name {
-                "oid" => OID_TYPE,
-                "rolconnlimit" => PgType::Int4.to_oid(),
-                "rolsuper" | "rolinherit" | "rolcreaterole" | "rolcreatedb" | "rolcanlogin"
-                | "rolreplication" | "rolbypassrls" => PgType::Bool.to_oid(),
-                _ => PgType::Text.to_oid(),
-            }
-        } else if query.contains("pg_user") {
-            match column_name {
-                "usesysid" => OID_TYPE,
-                "usecreatedb" | "usesuper" | "userepl" | "usebypassrls" => PgType::Bool.to_oid(),
-                _ => PgType::Text.to_oid(),
-            }
-        } else if query.contains("pg_settings") {
-            match column_name {
-                "sourceline" => PgType::Int4.to_oid(),
-                "pending_restart" => PgType::Bool.to_oid(),
-                _ => PgType::Text.to_oid(),
-            }
         } else if query.contains("pg_index") {
             match column_name {
                 "indexrelid" | "indrelid" => OID_TYPE,
@@ -4657,9 +4627,6 @@ impl ExtendedQueryHandler {
         result_formats: &[i16],
         field_types: &[i32],
     ) -> Result<Vec<Option<Vec<u8>>>, PgSqliteError> {
-        const OID_TYPE: i32 = 26;
-        const XID_TYPE: i32 = 28;
-
         info!(
             "encode_row called with {} fields, {} result_formats, {} field_types",
             row.len(),
@@ -4763,20 +4730,6 @@ impl ExtendedQueryHandler {
                                         Some(buf)
                                     } else {
                                         // If we can't parse it, return as text (fallback)
-                                        Some(bytes.clone())
-                                    }
-                                } else {
-                                    Some(bytes.clone())
-                                }
-                            }
-                            OID_TYPE | XID_TYPE => {
-                                // oid/xid - convert text to 4-byte unsigned binary
-                                if let Ok(s) = String::from_utf8(bytes.clone()) {
-                                    if s.trim().is_empty() {
-                                        None
-                                    } else if let Ok(val) = s.parse::<u32>() {
-                                        Some(val.to_be_bytes().to_vec())
-                                    } else {
                                         Some(bytes.clone())
                                     }
                                 } else {
@@ -6369,9 +6322,7 @@ impl ExtendedQueryHandler {
         session: &Arc<SessionState>,
         query: &str,
     ) -> Vec<FieldDescription> {
-        let Some((base_query, returning_clause)) =
-            ReturningTranslator::extract_returning_clause(query)
-        else {
+        let Some((base_query, returning_clause)) = ReturningTranslator::extract_returning_clause(query) else {
             return Vec::new();
         };
 
@@ -6389,13 +6340,9 @@ impl ExtendedQueryHandler {
             return Vec::new();
         };
 
-        let columns = Self::extract_returning_columns_for_describe(
-            db,
-            session,
-            &table_name,
-            &returning_clause,
-        )
-        .await;
+        let columns =
+            Self::extract_returning_columns_for_describe(db, session, &table_name, &returning_clause)
+                .await;
         if columns.is_empty() {
             return Vec::new();
         }
@@ -6419,14 +6366,11 @@ impl ExtendedQueryHandler {
     ) -> Vec<String> {
         if returning_clause.trim() == "*" {
             let pragma_query = format!("PRAGMA table_info({table_name})");
-            if let Ok(response) = db
-                .query_with_session_cached(
-                    &pragma_query,
-                    &session.id,
-                    Self::get_or_cache_connection(session, db).await.as_ref(),
-                )
-                .await
-            {
+            if let Ok(response) = db.query_with_session_cached(
+                &pragma_query,
+                &session.id,
+                Self::get_or_cache_connection(session, db).await.as_ref(),
+            ).await {
                 return response
                     .rows
                     .iter()
@@ -6528,7 +6472,7 @@ impl ExtendedQueryHandler {
             let portal = portals.get(portal_name).unwrap();
             let statements = session.prepared_statements.read().await;
             let stmt = statements.get(&portal.statement_name).unwrap();
-            !portal.row_description_sent && stmt.field_descriptions.is_empty()
+            stmt.field_descriptions.is_empty()
         };
 
         if query_starts_with_ignore_case(&base_query, "INSERT") {
@@ -6609,17 +6553,12 @@ impl ExtendedQueryHandler {
                 &returning_clause,
             )
             .await;
-            let field_types: Vec<i32> = fields.iter().map(|field| field.type_oid).collect();
 
             if send_row_desc {
                 framed
                     .send(BackendMessage::RowDescription(fields))
                     .await
                     .map_err(PgSqliteError::Io)?;
-                let mut portals = session.portals.write().await;
-                if let Some(portal) = portals.get_mut(portal_name) {
-                    portal.row_description_sent = true;
-                }
             }
 
             // Convert timestamps and send data rows
@@ -6633,9 +6572,8 @@ impl ExtendedQueryHandler {
             .await?;
 
             for row in converted_rows {
-                let encoded_row = Self::encode_row(&row, result_formats, &field_types)?;
                 framed
-                    .send(BackendMessage::DataRow(encoded_row))
+                    .send(BackendMessage::DataRow(row))
                     .await
                     .map_err(PgSqliteError::Io)?;
             }
@@ -6695,17 +6633,12 @@ impl ExtendedQueryHandler {
                     &returning_clause,
                 )
                 .await;
-                let field_types: Vec<i32> = fields.iter().map(|field| field.type_oid).collect();
 
                 if send_row_desc {
                     framed
                         .send(BackendMessage::RowDescription(fields))
                         .await
                         .map_err(PgSqliteError::Io)?;
-                    let mut portals = session.portals.write().await;
-                    if let Some(portal) = portals.get_mut(portal_name) {
-                        portal.row_description_sent = true;
-                    }
                 }
 
                 // Convert timestamps and send data rows
@@ -6719,9 +6652,8 @@ impl ExtendedQueryHandler {
                 .await?;
 
                 for row in converted_rows {
-                    let encoded_row = Self::encode_row(&row, result_formats, &field_types)?;
                     framed
-                        .send(BackendMessage::DataRow(encoded_row))
+                        .send(BackendMessage::DataRow(row))
                         .await
                         .map_err(PgSqliteError::Io)?;
                 }
@@ -6775,17 +6707,12 @@ impl ExtendedQueryHandler {
                 &returning_clause,
             )
             .await;
-            let field_types: Vec<i32> = fields.iter().map(|field| field.type_oid).collect();
 
             if send_row_desc {
                 framed
                     .send(BackendMessage::RowDescription(fields))
                     .await
                     .map_err(PgSqliteError::Io)?;
-                let mut portals = session.portals.write().await;
-                if let Some(portal) = portals.get_mut(portal_name) {
-                    portal.row_description_sent = true;
-                }
             }
 
             // Convert timestamps in captured rows (skip rowid column)
@@ -6806,9 +6733,8 @@ impl ExtendedQueryHandler {
 
             // Send converted rows
             for row in converted_rows {
-                let encoded_row = Self::encode_row(&row, result_formats, &field_types)?;
                 framed
-                    .send(BackendMessage::DataRow(encoded_row))
+                    .send(BackendMessage::DataRow(row))
                     .await
                     .map_err(PgSqliteError::Io)?;
             }
